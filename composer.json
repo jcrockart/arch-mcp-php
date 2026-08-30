@@ -1,0 +1,18 @@
+{
+    "name": "arch-collab/arch-mcp-server",
+    "description": "ARCH Agent-Connection MCP server (Codegen CLI Design section 8) - real, hosted implementation. Wraps arch.py exactly as a human would from the command line; holds no git logic of its own.",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.1",
+        "mcp/sdk": "^0.1",
+        "nyholm/psr7": "^1.8",
+        "nyholm/psr7-server": "^1.1",
+        "laminas/laminas-httphandlerrunner": "^2.12"
+    },
+    "autoload": {
+        "psr-4": {
+            "ArchMcp\\": "src/"
+        }
+    }
+}
