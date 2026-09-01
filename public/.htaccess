@@ -1,0 +1,9 @@
+# ARCH MCP — token-in-path routing. DRAFT, not deployed (2026-09-01).
+#
+# /t/<token>/ and /t/<token> both route to index.php. REQUEST_URI is
+# preserved, which is what ArchProfiles::extractToken() reads.
+#
+# Everything else 404s at the webserver, so the bare hostname stops
+# being a usable endpoint the moment this lands.
+RewriteEngine On
+RewriteRule ^t/[A-Za-z0-9_-]{32,128}/?$ index.php [L,QSA]

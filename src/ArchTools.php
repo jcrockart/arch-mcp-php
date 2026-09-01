@@ -37,10 +37,28 @@ final class ArchTools
     private string $sessionFile;
     private string $phpBinary;
 
+    /** @var array<string, string> lane name => subdirectory under repoPath */
+    private array $lanes;
+
+    /** @var list<string>|null lowercase extensions writable by this token; null = unrestricted */
+    private ?array $writeExtensions;
+
+    /**
+     * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
+     *        Resolved token profile (ArchProfiles::resolve). Null is
+     *        accepted only so existing unit tests that construct this
+     *        class directly keep working; in that case it falls back to
+     *        the historical single-repo behaviour. public/index.php
+     *        always passes a real profile and refuses the request when
+     *        it cannot resolve one, so null never occurs in production.
+     */
     public function __construct(
         private readonly LoggerInterface $logger,
+        ?array $profile = null,
     ) {
-        $this->repoPath = ArchConfig::REPO_PATH;
+        $this->repoPath = $profile['root'] ?? ArchConfig::REPO_PATH;
+        $this->lanes = $profile['lanes'] ?? ['metadata' => 'metadata', 'site' => 'site'];
+        $this->writeExtensions = $profile['write_extensions'] ?? null;
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -185,6 +203,10 @@ final class ArchTools
             return ['success' => false, 'error' => 'no active session — call arch_session_start first'];
         }
 
+        if (!$this->extensionAllowed($path)) {
+            return ['success' => false, 'error' => "file type not permitted for this token: '{$path}'"];
+        }
+
         $resolved = $this->resolveMetadataPath($path);
         if (null === $resolved) {
             return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside metadata/"];
@@ -241,8 +263,14 @@ final class ArchTools
      */
     public function archSessionListFiles(): array
     {
-        $root = $this->repoPath.'/metadata';
-        if (!is_dir($root)) {
+        // Was: $this->repoPath.'/metadata' — a hardcoded subdirectory that
+        // ignored the token's lane map completely. Two bugs in one: a
+        // profile whose 'metadata' lane is the root itself listed a
+        // nonexistent subdirectory and returned an empty list while
+        // reporting success, and a token never granted this lane would
+        // still have had a directory listed for it. Fixed 2026-09-01.
+        $root = $this->laneRoot('metadata');
+        if (null === $root || !is_dir($root)) {
             return ['success' => true, 'files' => []];
         }
 
@@ -251,9 +279,19 @@ final class ArchTools
             new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
         );
         foreach ($iterator as $fileInfo) {
-            if ($fileInfo->isFile()) {
-                $files[] = ltrim(str_replace($root, '', $fileInfo->getPathname()), '/');
+            if (!$fileInfo->isFile()) {
+                continue;
             }
+            $rel = ltrim(str_replace($root, '', $fileInfo->getPathname()), '/');
+            // Same dot-component rule the read/write paths enforce. Without
+            // this the listing still enumerated every .git/ internal by
+            // name — blocked from being READ, but fully disclosed, which
+            // is both a leak and an unusable wall of output when a lane is
+            // rooted at a checkout.
+            if ($this->hasDotComponent($rel)) {
+                continue;
+            }
+            $files[] = $rel;
         }
         sort($files);
 
@@ -267,11 +305,245 @@ final class ArchTools
      */
     private function resolveMetadataPath(string $relativePath): ?string
     {
+        return $this->resolveScopedPath($relativePath, 'metadata');
+    }
+
+    /**
+     * Added 2026-08-31, deployed with James live at the terminal after
+     * being drafted and locally tested overnight — see Codegen CLI Design
+     * §8 for why it wasn't shipped unattended.
+     *
+     * Write (create or overwrite) a file inside site/, a new sibling
+     * directory to metadata/ at the repo root — deliberately NOT the same
+     * tree the five session/metadata tools operate on, and deliberately
+     * NOT gated by an active session. Per the three-stage model James
+     * proposed 2026-08-30 (development push -> git commit -> git
+     * publish), this is stage one only: a "development push," reversible,
+     * no validation semantics, nothing this touches is metadata that
+     * validate.py or arch_session_commit ever look at. Committing what
+     * lands here to git, and any further "publish to a live docroot"
+     * step, both stay explicit human-gated actions — this tool performs
+     * neither.
+     *
+     * Same path-traversal discipline as archSessionWriteFile, just rooted
+     * at site/ instead of metadata/ — see resolveScopedPath.
+     *
+     * @param string $path    relative path under site/, e.g. "index.html"
+     * @param string $content full file content to write
+     *
+     * @return array<string, mixed>
+     */
+    public function archSiteWriteFile(string $path, string $content): array
+    {
+        if (!$this->extensionAllowed($path)) {
+            return ['success' => false, 'error' => "file type not permitted for this token: '{$path}'"];
+        }
+
+        $resolved = $this->resolveSitePath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside site/"];
+        }
+
+        $dir = \dirname($resolved);
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return ['success' => false, 'error' => "could not create directory for '{$path}'"];
+        }
+
+        if (false === file_put_contents($resolved, $content)) {
+            return ['success' => false, 'error' => "failed to write '{$path}'"];
+        }
+
+        $this->logger->info('Site file written.', ['path' => $path, 'bytes' => \strlen($content)]);
+
+        return ['success' => true, 'path' => $path, 'bytes' => \strlen($content)];
+    }
+
+    /**
+     * Added 2026-08-31 alongside archSiteWriteFile — see that method's
+     * docblock.
+     *
+     * Read a file's current content from site/. Always safe, no session
+     * required, mirrors archSessionReadFile.
+     *
+     * @param string $path relative path under site/
+     *
+     * @return array<string, mixed>
+     */
+    public function archSiteReadFile(string $path): array
+    {
+        $resolved = $this->resolveSitePath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside site/"];
+        }
+
+        if (!is_file($resolved)) {
+            return ['success' => false, 'error' => "'{$path}' does not exist"];
+        }
+
+        $content = file_get_contents($resolved);
+        if (false === $content) {
+            return ['success' => false, 'error' => "failed to read '{$path}'"];
+        }
+
+        return ['success' => true, 'path' => $path, 'content' => $content];
+    }
+
+    /**
+     * Added 2026-08-31 alongside archSiteWriteFile — see that method's
+     * docblock.
+     *
+     * List every file currently in site/, mirrors archSessionListFiles.
+     *
+     * @return array<string, mixed>
+     */
+    public function archSiteListFiles(): array
+    {
+        // Was: $this->repoPath.'/site' — a hardcoded subdirectory that
+        // ignored the token's lane map completely. Two bugs in one: a
+        // profile whose 'site' lane is the root itself listed a
+        // nonexistent subdirectory and returned an empty list while
+        // reporting success, and a token never granted this lane would
+        // still have had a directory listed for it. Fixed 2026-09-01.
+        $root = $this->laneRoot('site');
+        if (null === $root || !is_dir($root)) {
+            return ['success' => true, 'files' => []];
+        }
+
+        $files = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $fileInfo) {
+            if (!$fileInfo->isFile()) {
+                continue;
+            }
+            $rel = ltrim(str_replace($root, '', $fileInfo->getPathname()), '/');
+            // Same dot-component rule the read/write paths enforce. Without
+            // this the listing still enumerated every .git/ internal by
+            // name — blocked from being READ, but fully disclosed, which
+            // is both a leak and an unusable wall of output when a lane is
+            // rooted at a checkout.
+            if ($this->hasDotComponent($rel)) {
+                continue;
+            }
+            $files[] = $rel;
+        }
+        sort($files);
+
+        return ['success' => true, 'files' => $files];
+    }
+
+    /**
+     * Resolves a caller-supplied relative path to an absolute path inside
+     * site/, refusing anything that would escape it. Same logic as
+     * resolveMetadataPath, rooted at site/ instead of metadata/.
+     */
+    private function resolveSitePath(string $relativePath): ?string
+    {
+        return $this->resolveScopedPath($relativePath, 'site');
+    }
+
+    /**
+     * Shared implementation behind resolveMetadataPath and
+     * resolveSitePath: resolves a caller-supplied relative path to an
+     * absolute path inside repoPath/$subdir, refusing anything that would
+     * escape it (../, symlink tricks, absolute paths, null bytes).
+     * Returns null on any violation. This is an allowlist of named
+     * directories (metadata/, site/), not a blocklist of the repo root —
+     * arch.py, validate.py, and .git remain unreachable by construction
+     * regardless of how many scoped lanes get added here in future.
+     */
+    /**
+     * Absolute filesystem root for a lane this token was granted, or null.
+     * Single source of truth for "where does this lane live" — every
+     * caller must go through here, including the list methods, which
+     * previously derived it themselves and got it wrong.
+     */
+    /**
+     * Extension allowlist for writes.
+     *
+     * A site lane points at a directory Apache serves with PHP enabled.
+     * Writing shell.php there is remote code execution reachable at
+     * https://<domain>/<path>/shell.php — no traversal, no escape, just
+     * a filename. That risk existed before per-token scoping; it becomes
+     * material the moment a token is handed to someone else, so the
+     * allowlist is defined per profile and defaults to unrestricted only
+     * for profiles that do not set one (i.e. James's own).
+     */
+    private function extensionAllowed(string $relativePath): bool
+    {
+        if (null === $this->writeExtensions) {
+            return true;
+        }
+        $ext = strtolower(pathinfo($relativePath, \PATHINFO_EXTENSION));
+
+        return '' !== $ext && \in_array($ext, $this->writeExtensions, true);
+    }
+
+    private function laneRoot(string $lane): ?string
+    {
+        if (!isset($this->lanes[$lane])) {
+            return null;
+        }
+        $subdir = $this->lanes[$lane];
+
+        return '' === $subdir ? $this->repoPath : $this->repoPath.'/'.$subdir;
+    }
+
+    /**
+     * Reject any path with a dot-prefixed component.
+     *
+     * Needed because a lane can now be rooted at a directory that holds
+     * more than site content. rcp-dev's lane is a git CHECKOUT ROOT, so
+     * .git/ sits inside the lane rather than above it — reachable as the
+     * plain relative path ".git/config", no traversal required. Reading
+     * it leaks the remote; writing .git/hooks/post-merge would execute
+     * on the next deployment pull. Neither is a traversal escape, which
+     * is why the ../ tests all passed while this was wide open.
+     *
+     * Also catches .htaccess, .env, .htpasswd. Known casualty:
+     * .well-known/ for ACME — handle that by hand if it is ever needed.
+     */
+    private function hasDotComponent(string $relativePath): bool
+    {
+        foreach (explode('/', str_replace('\\', '/', $relativePath)) as $part) {
+            if ('' !== $part && '.' === $part[0]) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function resolveScopedPath(string $relativePath, string $lane): ?string
+    {
         if ('' === $relativePath || str_contains($relativePath, "\0")) {
             return null;
         }
 
-        $root = $this->repoPath.'/metadata';
+        if ($this->hasDotComponent($relativePath)) {
+            return null;
+        }
+
+        // Lane allowlist, per token. A token whose profile does not grant
+        // this lane gets null here even if the tool was somehow invoked
+        // by name — filtering the advertised tool list in index.php is an
+        // ergonomic nicety, THIS is the actual control.
+        $root = $this->laneRoot($lane);
+        if (null === $root) {
+            return null;
+        }
+
+        // $root itself is built from trusted, hardcoded values only
+        // ($repoPath, $subdir) — never from $relativePath — so creating
+        // it here if missing is safe. Needed because realpath() can't
+        // resolve a directory that doesn't exist yet, which metadata/
+        // never hit (bootstrapped into the repo from day one) but a new
+        // scoped root like site/ will on its very first write.
+        if (!is_dir($root)) {
+            @mkdir($root, 0775, true);
+        }
+
         $candidate = $root.'/'.ltrim($relativePath, '/');
 
         // Resolve the deepest existing ancestor to catch ../ traversal
@@ -289,7 +561,18 @@ final class ArchTools
 
         $realAncestor = realpath($existingAncestor);
         $realRoot = realpath($root) ?: $root;
-        if (false === $realAncestor || 0 !== strncmp($realAncestor, $realRoot, \strlen($realRoot))) {
+
+        // Boundary-aware containment check. The previous version used a
+        // bare strncmp() prefix test, which also accepted any SIBLING
+        // whose name merely started with the root's name — with a single
+        // hardcoded repo that needed a directory called e.g. "site-old"
+        // to exploit, but once roots are per-token it means a token
+        // rooted at .../rcp would equally accept .../rcp-backup. Fixed
+        // 2026-09-01 as part of this change.
+        if (false === $realAncestor) {
+            return null;
+        }
+        if ($realAncestor !== $realRoot && !str_starts_with($realAncestor, $realRoot.'/')) {
             return null;
         }
 

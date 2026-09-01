@@ -1,3 +1,9 @@
 /vendor/
 /var/sessions/*
 !/var/sessions/.gitkeep
+tokens.json
+*.bak
+*.bak-*
+*.orig
+*.save
+/var/sessions/
