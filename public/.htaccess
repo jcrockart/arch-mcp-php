@@ -1,9 +1,54 @@
-# ARCH MCP — token-in-path routing. DRAFT, not deployed (2026-09-01).
+# ARCH MCP — deny-by-default web root.
+# Revised 2026-09-02 (round 7: /project/ and /group/ addressing).
 #
-# /t/<token>/ and /t/<token> both route to index.php. REQUEST_URI is
-# preserved, which is what ArchProfiles::extractToken() reads.
+# Two namespaces:
+#   /project/<name>          dedicated space, one profile, one root
+#   /group/<name>/<sub>      shared space; the token authorises the GROUP
+#                            and the trailing segment picks (or seeds) a
+#                            sub-project inside it
 #
-# Everything else 404s at the webserver, so the bare hostname stops
-# being a usable endpoint the moment this lands.
+# The name is an identifier, NOT a credential — harmless in an access log,
+# which is why the token lives in the x-api-key header. The path exists
+# because claude.ai deduplicates connectors by URL across an organisation,
+# so every endpoint needs a distinct one.
+#
+# Segments may not begin with a dot, so ".." and ".git" cannot appear —
+# traversal is impossible by construction, not by filtering.
+#
+# This file only ever ROUTES. Authorisation is entirely PHP's job and
+# fails closed there; an earlier revision claimed to deny unmatched
+# requests while doing no such thing, which left backup files fetchable.
+# Hence the explicit catch-all.
+
 RewriteEngine On
+
+# Already-rewritten entrypoint: let through untouched, or the catch-all
+# below 404s the request we just routed (mod_rewrite re-runs on the
+# rewritten URL in per-directory context).
+RewriteRule ^index\.php$ - [L]
+
+# Dedicated project space.
+RewriteRule ^project/[A-Za-z0-9][A-Za-z0-9._-]*/?$ index.php [L,QSA]
+
+# Shared group space, sub-project up to 4 segments deep.
+RewriteRule ^group/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*){1,4}/?$ index.php [L,QSA]
+
+# Bare root. Legacy: one connector still uses it and claude.ai will not
+# let that URL be re-registered elsewhere. No address to check, so it gets
+# no misconfiguration protection — migrate it to /project/<name>/.
+RewriteRule ^$ index.php [L,QSA]
+
+# Transitional: token in the path. Retires with ALLOW_PATH_TOKEN.
 RewriteRule ^t/[A-Za-z0-9_-]{32,128}/?$ index.php [L,QSA]
+
+# Everything else refused here, not by PHP.
+RewriteRule ^ - [R=404,L]
+
+# Second layer, in case a future edit loosens the rules above. If the host
+# disallows Require in .htaccess this block errors — delete it and rely on
+# the rewrite catch-all.
+<FilesMatch "(?i)\.(bak|bak-[0-9]+|orig|save|old|swp|swo|dist|log|inc|json)$">
+    Require all denied
+</FilesMatch>
+
+Options -Indexes

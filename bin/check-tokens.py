@@ -23,16 +23,18 @@ def main():
 
     # Top-level duplicate keys. JSON silently keeps the LAST one, so two
     # profiles sharing a key means one vanishes with no error anywhere.
-    dupes = []
-    seen = set()
+    #
+    # object_pairs_hook fires for EVERY object, innermost first, so the
+    # ROOT object is the last one it sees. The first version of this check
+    # tried to spot nested objects by looking for "label"/"root"/"lanes"
+    # keys — which missed the "lanes" objects themselves, so two profiles
+    # each having a lane called "site" was reported as a duplicate token.
+    # A false alarm on the one check that exists to catch a silent data
+    # loss is worse than no check, hence this rewrite.
+    records = []
 
     def hook(pairs):
-        if any(k in ("label", "root", "lanes") for k, _ in pairs):
-            return dict(pairs)          # nested object, not the top level
-        for k, _ in pairs:
-            if k in seen:
-                dupes.append(k)
-            seen.add(k)
+        records.append(pairs)
         return dict(pairs)
 
     try:
@@ -40,10 +42,13 @@ def main():
     except ValueError as e:
         print("[FAIL] not valid JSON: {}".format(e)); return 1
 
+    root_keys = [k for k, _ in records[-1]] if records else []
+    dupes = sorted({k for k in root_keys if root_keys.count(k) > 1})
+
     problems = 0
     if dupes:
         problems += 1
-        print("[FAIL] DUPLICATE top-level keys: {} — JSON keeps only the LAST.".format(len(dupes)))
+        print("[FAIL] DUPLICATE top-level keys: {} — JSON keeps only the LAST.".format(", ".join(dupes)))
         print("       Two profiles sharing a token key means one is silently discarded.")
 
     print("\nmode: {}".format(oct(os.stat(MAP).st_mode & 0o777)))

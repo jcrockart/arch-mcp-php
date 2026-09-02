@@ -62,34 +62,47 @@ set_exception_handler(static function (\Throwable $t): void {
 $logger = archMcpLogger();
 
 // ---------------------------------------------------------------------
-// Token gate. Added 2026-09-01. DRAFT — not deployed.
+// Token gate. Added 2026-09-01, addressing scheme revised 2026-09-02.
 //
 // Before this, the server had no authentication of any kind: anyone who
 // knew the URL could call all 11 tools against arch-collab-core,
-// including both write lanes (Codegen CLI Design §9 item 5). The URL is
-// now /t/<token>/ and the token selects a profile that decides the root
-// directory, the available lanes, and whether the session tools exist
-// at all for this caller.
+// including both write lanes (Codegen CLI Design §9 item 5). Now the
+// token — in the x-api-key header — selects a profile that decides the
+// root directory, the available lanes, and whether the session tools
+// exist at all for this caller.
+//
+// The URL carries the ADDRESS, which is an identifier and not a
+// credential: /project/<name> for a dedicated space, or
+// /group/<name>/<sub...> for a shared space in which each sub-project
+// is a separate subtree under one group token. Both must agree with the
+// token's own profile or the request is refused — a connector pointed
+// at the wrong address with a valid token must fail loudly rather than
+// succeed quietly against the wrong tree.
 //
 // 404 rather than 401/403, and before any MCP machinery starts: an
 // unauthenticated caller should not be able to distinguish "wrong
 // token" from "nothing here", nor reach anything that would tell them
 // what this endpoint is. The token is never written to the log — only
-// the resolved label is.
+// the resolved address is.
 // ---------------------------------------------------------------------
-$profile = ArchProfiles::resolve(
-    ArchProfiles::extractToken($_SERVER['REQUEST_URI'] ?? '')
-);
+// One call makes the whole authorisation decision: token (header, or
+// path during migration), profile lookup, address match, and — for a
+// group — resolving the sub-project subtree.
+[$profile, $authVia] = ArchProfiles::resolveRequest($_SERVER);
 
 if (null === $profile) {
-    $logger->warning('Rejected MCP request with no valid token profile');
+    // 'via' records how the caller TRIED to authenticate, never what with.
+    $logger->warning('Rejected MCP request', ['via' => $authVia]);
     http_response_code(404);
     header('Content-Type: application/json');
     echo json_encode(['error' => 'not_found']);
     exit;
 }
 
-$logger->info('MCP request authorised', ['profile' => $profile['label']]);
+// 'via' is the migration signal: once this never reads 'path' again,
+// flip ArchProfiles::ALLOW_PATH_TOKEN to false and the URL stops being
+// a credential.
+$logger->info('MCP request authorised', ['address' => $profile['address'], 'via' => $authVia]);
 
 $container = new Container();
 $container->set(LoggerInterface::class, $logger);
@@ -109,10 +122,12 @@ $container->set(ArchTools::class, new ArchTools($logger, $profile));
 //
 // Session state is additionally partitioned per profile: a session
 // belongs to one token's tree and must never be visible to another.
-$sessionDir = dirname(__DIR__).'/var/sessions/'.hash('sha256', $profile['label']);
+// Partition by ADDRESS, not label: two sub-projects of one group share a
+// profile and a token, but must never share session state.
+$sessionDir = dirname(__DIR__).'/var/sessions/'.hash('sha256', $profile['address']);
 
 $builder = Server::builder()
-    ->setServerInfo('arch-mcp ('.$profile['label'].')', '0.2.0')
+    ->setServerInfo('arch-mcp ('.$profile['address'].')', '0.3.0')
     ->setLogger($logger)
     ->setContainer($container)
     ->setSession(new FileSessionStore($sessionDir));
