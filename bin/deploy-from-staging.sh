@@ -176,6 +176,29 @@ done
 echo
 echo "Next:  python3 $APP/tests/acceptance/verify-scoping.py"
 echo "Roll back:  cp -pr $BACKUP/. $APP/"
+
+# --- clear what we installed ------------------------------------------
+# Not tidiness: a file left in staging reads as "pending deploy", and
+# after a successful install it means precisely the opposite. That
+# ambiguity has already cost one debugging session. Only files this run
+# installed are removed — anything skipped for being outside
+# src/ public/ tests/ is left alone, since this script never owned it.
+# Nothing is lost: pre-install versions are in $BACKUP, post-install
+# versions are the live files.
+while IFS= read -r rel; do
+    rm -f "$STAGE/$rel"
+done < "$WORK/changed"
+
+# Drop the empty directory skeleton. -delete implies -depth, so nested
+# empties go bottom-up in one pass; rmdir semantics mean any directory
+# still holding a file survives. -mindepth 1 protects $STAGE itself.
+find "$STAGE" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+
 echo
-echo "Staged files are left in place. Clear them when satisfied:"
-echo "  rm -rf $STAGE/src $STAGE/public $STAGE/tests"
+echo "cleared installed files from $STAGE"
+if [ -n "$(find "$STAGE" -type f 2>/dev/null)" ]; then
+    echo "still in staging (NOT installed by this run):"
+    find "$STAGE" -type f | sed "s#^$STAGE/#  #"
+fi
+
+
