@@ -27,7 +27,7 @@ BASE = "https://mcp.crockart.com.au"
 # a one-off.
 PROFILES = [
     {
-        "label": "james-arch-collab",
+        "label": "arch-collab",
         "root": "/home/crockart/arch-collab-core",
         "lanes": {"metadata": "metadata", "site": "site"},
         "session_tools": True,
