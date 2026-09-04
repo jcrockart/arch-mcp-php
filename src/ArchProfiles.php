@@ -61,13 +61,27 @@ final class ArchProfiles
     private const TOKEN_HEADER = 'X-Api-Key';
 
     /**
-     * Transitional. While true, a token in the URL path (/t/<token>/) is
-     * still accepted, so a connector registered the old way keeps working
-     * during migration. Set to false once every registered connector
-     * sends the header — at which point the URL stops being a credential
-     * and stops appearing in access logs, which is the entire point.
+     * CUTOVER COMPLETE 2026-09-02. A token in the URL path (/t/<token>/)
+     * is no longer accepted. Every registered connector sends the header,
+     * so the URL is now an identifier only and a bearer secret can no
+     * longer reach an access log, a Referer header, or a shared link.
+     *
+     * Two independent layers enforce this, deliberately: this constant
+     * makes fromRequest() return before extractToken() is ever reached,
+     * and .htaccess no longer routes /t/ at all, so such a request 404s
+     * at Apache without PHP running. Either alone would do; both means a
+     * single edit cannot silently reopen it.
+     *
+     * extractToken() and its tests are retained as dead code on purpose —
+     * removing them is a tidy-up, not a security fix, and it would widen
+     * the diff on the file that defines the boundary. Delete them in a
+     * separate change if desired.
+     *
+     * DO NOT set this back to true to work around a broken connector.
+     * The fix for a connector that stopped working is to register it
+     * correctly, not to reopen the route that put tokens in logs.
      */
-    private const ALLOW_PATH_TOKEN = true;
+    private const ALLOW_PATH_TOKEN = false;
 
     /**
      * Parse an MCP endpoint address out of the request path.

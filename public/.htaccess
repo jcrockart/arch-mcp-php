@@ -33,14 +33,13 @@ RewriteRule ^project/[A-Za-z0-9][A-Za-z0-9._-]*/?$ index.php [L,QSA]
 # Shared group space, sub-project up to 4 segments deep.
 RewriteRule ^group/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*){1,4}/?$ index.php [L,QSA]
 
-# Bare root. Legacy: one connector still uses it and claude.ai will not
-# let that URL be re-registered elsewhere. No address to check, so it gets
-# no misconfiguration protection — migrate it to /project/<name>/.
-RewriteRule ^$ index.php [L,QSA]
-
-# Transitional: token in the path. Retires with ALLOW_PATH_TOKEN.
-RewriteRule ^t/[A-Za-z0-9_-]{32,128}/?$ index.php [L,QSA]
-
+# The bare root and the transitional /t/<token>/ route were both removed
+# 2026-09-02, once all three connectors were registered on /project/
+# addresses. The bare root had no address to check and so got none of the
+# misconfiguration protection above; /t/ put a bearer secret in every
+# access log entry. Neither is coming back — a connector that stops
+# working gets re-registered, not re-routed.
+#
 # Everything else refused here, not by PHP.
 RewriteRule ^ - [R=404,L]
 

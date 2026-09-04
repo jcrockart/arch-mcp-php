@@ -127,8 +127,10 @@ check('header token accepted',              $tok === $H && $via === 'header');
 list($tok, $via) = fromReq(['HTTP_X_API_KEY' => "  $H  ", 'REQUEST_URI' => '/']);
 check('header whitespace trimmed',          $tok === $H);
 
+// Cutover 2026-09-02: ALLOW_PATH_TOKEN is false, so a path token is no
+// longer a credential. fromRequest must not even look at the URL.
 list($tok, $via) = fromReq(['REQUEST_URI' => "/t/$P/"]);
-check('path still works in transition',     $tok === $P && $via === 'path');
+check('path token now REFUSED',             $tok === null && $via === 'none');
 
 // The important one: a present-but-broken header must NOT fall through to
 // a path token. Otherwise a mistyped header silently keeps working off a
