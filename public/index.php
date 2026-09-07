@@ -152,6 +152,14 @@ if ($profile['session_tools'] && isset($profile['lanes']['metadata'])) {
         ->addTool([ArchTools::class, 'archSessionListFiles'], 'arch_session_list_files');
 }
 
+if (isset($profile['lanes']['core'])) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archCoreGitStatus'], 'arch_core_git_status')
+        ->addTool([ArchTools::class, 'archCoreGitDiff'], 'arch_core_git_diff')
+        ->addTool([ArchTools::class, 'archCoreGitLog'], 'arch_core_git_log')
+        ->addTool([ArchTools::class, 'archCoreGitShow'], 'arch_core_git_show');
+}
+
 // Added 2026-08-31, deployed with James live at the terminal after an
 // overnight draft-and-test cycle (not shipped unattended — see Codegen
 // CLI Design §8 for why). Deliberately separate name prefix
