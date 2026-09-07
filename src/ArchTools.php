@@ -631,4 +631,127 @@ final class ArchTools
         // clearer error will surface from proc_open if nothing exists.
         return 'python3';
     }
+
+private const ALLOWED_GIT_SUBCOMMANDS = ['status', 'diff', 'log', 'show'];
+
+/**
+ * A caller-supplied ref or path that starts with '-' would be parsed by
+ * git as a flag rather than a value — e.g. "--output=/tmp/x" turns a
+ * read-only `git diff` into a write to an arbitrary path. Refusing
+ * anything flag-shaped closes that off without needing to enumerate
+ * every dangerous flag individually.
+ */
+private function looksLikeFlag(string $value): bool
+{
+    return '' !== $value && str_starts_with($value, '-');
+}
+
+/**
+ * @param list<string> $args
+ *
+ * @return array{exit_code: int, stdout: string, stderr: string}
+ */
+private function runGit(array $args): array
+{
+    $root = $this->laneRoot('core');
+    if (null === $root) {
+        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token has no core lane'];
+    }
+    $subcommand = $args[0] ?? '';
+    if (!\in_array($subcommand, self::ALLOWED_GIT_SUBCOMMANDS, true)) {
+        return ['exit_code' => 1, 'stdout' => '', 'stderr' => "git subcommand '{$subcommand}' not permitted for this tool"];
+    }
+    $command = array_merge(['git'], $args);
+    $descriptorSpec = [
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptorSpec, $pipes, $root);
+    if (!\is_resource($process)) {
+        $this->logger->error('Failed to spawn git process.', ['command' => $command]);
+        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'failed to spawn git'];
+    }
+    $stdout = stream_get_contents($pipes[1]) ?: '';
+    $stderr = stream_get_contents($pipes[2]) ?: '';
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $this->logger->info('git invoked (core lane, read-only).', ['args' => $args, 'exit_code' => $exitCode]);
+    return ['exit_code' => $exitCode, 'stdout' => $stdout, 'stderr' => $stderr];
+}
+
+/**
+ * Report the core lane's working-tree status (uncommitted changes).
+ *
+ * Read-only — status/diff/log/show are the only git subcommands this
+ * tool will ever run; see runGit()'s allowlist. Never touches history
+ * or the working tree.
+ *
+ * @return array{exit_code: int, stdout: string, stderr: string}
+ */
+public function archCoreGitStatus(): array
+{
+    return $this->runGit(['status', '--short']);
+}
+
+/**
+ * Diff the core lane's working tree against a ref (default HEAD).
+ *
+ * @param string $ref  ref to diff against, e.g. "HEAD" or "origin/main"
+ * @param string $path optional path to scope the diff to, relative to the core lane root
+ *
+ * @return array{exit_code: int, stdout: string, stderr: string}
+ */
+public function archCoreGitDiff(string $ref = 'HEAD', string $path = ''): array
+{
+    if ($this->looksLikeFlag($ref) || $this->looksLikeFlag($path)) {
+        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'ref/path must not look like a flag'];
+    }
+    $args = ['diff', $ref];
+    if ('' !== $path) {
+        $args[] = '--';
+        $args[] = $path;
+    }
+    return $this->runGit($args);
+}
+
+/**
+ * Show recent commit history for the core lane.
+ *
+ * @param int    $count number of commits to show
+ * @param string $path  optional path to scope the log to
+ *
+ * @return array{exit_code: int, stdout: string, stderr: string}
+ */
+public function archCoreGitLog(int $count = 10, string $path = ''): array
+{
+    if ($this->looksLikeFlag($path)) {
+        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'path must not look like a flag'];
+    }
+    $args = ['log', '--oneline', '-'.max(1, $count)];
+    if ('' !== $path) {
+        $args[] = '--';
+        $args[] = $path;
+    }
+    return $this->runGit($args);
+}
+
+/**
+ * Show a file's content as of a given ref, without touching the working
+ * tree — e.g. compare what's on disk in staging against origin/main.
+ *
+ * @param string $ref  a commit, branch, or tag
+ * @param string $path path relative to the core lane root
+ *
+ * @return array{exit_code: int, stdout: string, stderr: string}
+ */
+public function archCoreGitShow(string $ref, string $path): array
+{
+    if ($this->looksLikeFlag($ref) || $this->looksLikeFlag($path)) {
+        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'ref/path must not look like a flag'];
+    }
+    return $this->runGit(['show', "{$ref}:{$path}"]);
+}    
+    
+    
 }
