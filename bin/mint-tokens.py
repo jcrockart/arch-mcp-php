@@ -17,22 +17,34 @@ one yet.
 three. A "site" or "metadata" lane needs --write-extensions (e.g.
 --write-extensions php,css,sql,md) -- there is no safe default allow-list.
 
-profiles.json (git-tracked, alongside this script) is the only
-declaration of what a label is allowed to touch. This script's job is
-secrets (which labels have a token, minting one for a label that
-doesn't) plus, now, adding the profiles.json entry itself for a new
-label so provisioning a new profile is one command instead of a hand
-edit followed by a mint run.
+MOVED 2026-09-12: profiles.json now lives at ~/arch-mcp-secrets/profiles.json,
+alongside tokens.json, instead of being git-tracked next to this script.
+It was git-tracked from 2026-09-01 to 2026-09-12 so a `git pull` delivered
+a code change to ArchProfiles.php and any profiles.json shape it newly
+required in one atomic step. That stopped making sense once profile
+creation needed to happen without a human pausing to run git for each one
+(self-service / automated provisioning, e.g. from arch-portal) --
+ArchProfiles.php::validate() already defaults every optional field, so
+there is no code/data lockstep left to protect. This script is now the
+only thing that edits profiles.json, the same way it was already the
+only thing that edits tokens.json -- both live, both outside git.
+
+profiles-changelog.jsonl (same directory) replaces the git history this
+move gives up: one JSON line per provision/rotate/mint, so "who added
+what, when" is still answerable without needing blame on a file nothing
+was reviewing per-line anyway.
 """
 
 import json
 import os
 import secrets
 import sys
+from datetime import datetime, timezone
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROFILES = os.path.join(REPO_ROOT, "profiles.json")
-MAP = os.path.expanduser("~/arch-mcp-secrets/tokens.json")
+SECRETS_DIR = os.path.expanduser("~/arch-mcp-secrets")
+PROFILES = os.path.join(SECRETS_DIR, "profiles.json")
+MAP = os.path.join(SECRETS_DIR, "tokens.json")
+CHANGELOG = os.path.join(SECRETS_DIR, "profiles-changelog.jsonl")
 BASE = "https://mcp.crockart.com.au"
 
 
@@ -59,6 +71,24 @@ def save_tokens(tokens):
     finally:
         os.umask(old)
     os.chmod(MAP, 0o600)
+
+
+def log_change(action, label, detail=None):
+    """Append one line to the change log. Best-effort: a logging failure
+    must never block the actual mint/provision/rotate it's recording."""
+    entry = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "action": action,
+        "label": label,
+    }
+    if detail is not None:
+        entry["detail"] = detail
+    try:
+        os.makedirs(os.path.dirname(CHANGELOG), exist_ok=True)
+        with open(CHANGELOG, "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError as exc:
+        print("Warning: couldn't append to {}: {}".format(CHANGELOG, exc))
 
 
 def label_for(tokens, label):
@@ -93,6 +123,8 @@ def mint_missing():
         print("Every profile in profiles.json already has a token.")
         return 0
     save_tokens(tokens)
+    for label in minted:
+        log_change("mint", label)
     print("Minted tokens for: {}".format(", ".join(sorted(minted))))
     print("Register each new connector now — the token was just written to")
     print("{}, never printed above.".format(MAP))
@@ -109,6 +141,7 @@ def rotate(label):
               if not (v == label or (isinstance(v, dict) and v.get("label") == label))}
     tokens[secrets.token_hex(32)] = label
     save_tokens(tokens)
+    log_change("rotate", label)
     print("Rotated {}'s token. Its connector must be re-registered; every".format(label))
     print("other label's token is untouched.")
     return 0
@@ -204,12 +237,14 @@ def provision(label, root, lanes, session_tools, write_extensions):
     tok = secrets.token_hex(32)
     tokens[tok] = label
     save_tokens(tokens)
+    log_change("provision", label, detail=entry)
 
     print("Added {!r} to {}.".format(label, PROFILES))
     print("Minted its token and wrote it to {}.".format(MAP))
     print("{}/project/{}/  (send as X-Api-Key: {})".format(BASE, label, tok))
-    print("Review and commit profiles.json on this checkout, then register")
-    print("the connector with the URL above.")
+    print("This took effect immediately — profiles.json is no longer")
+    print("git-tracked, so there is nothing left to commit or promote for")
+    print("this step. Just register the connector with the URL above.")
     return 0
 
 

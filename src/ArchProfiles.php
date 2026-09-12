@@ -327,15 +327,37 @@ final class ArchProfiles
         return $m[1];
     }
 
-        /**
-     * Git-tracked, non-secret profile declarations. Lives alongside this
-     * file in the deployed checkout — same repo, so `git pull` on either
-     * environment updates both this file and profiles.json together.
-     * Contains root/lanes/write_extensions/etc for every label; contains
-     * no secrets. tokens.json (MAP_PATH, still outside the web root,
-     * still mode 600) now only has to say WHICH label a token belongs to.
+    /**
+     * Non-secret profile declarations: root/lanes/write_extensions/etc
+     * for every label. Contains no bearer secrets.
+     *
+     * MOVED 2026-09-12 out of git, to sit beside MAP_PATH in the same
+     * secrets directory (not because this file is secret — it isn't —
+     * but because it is now, like tokens.json, LIVE OPERATIONAL STATE
+     * rather than deployed code). It was git-tracked from 2026-09-01 to
+     * 2026-09-12 specifically so a `git pull` delivered a code change to
+     * this file and any profiles.json shape it newly required in one
+     * atomic step. That reasoning no longer holds up once profile
+     * creation itself needs to happen without a human pausing to run
+     * git: validate() below already defaults every optional field
+     * (session_tools, seed, kind, write_extensions), so there is no
+     * code/data lockstep left to protect. What git-tracking actually cost
+     * was the thing that motivated this move: a provisioning action
+     * (today, mint-tokens.py --provision; eventually, arch-portal or
+     * other self-service tooling) could not take effect without a
+     * human-gated commit+push+pull, which does not scale past occasional
+     * manual use.
+     *
+     * DEPLOYMENT ORDER MATTERS: this file must exist and be readable at
+     * this path BEFORE this code change is promoted to prod, or every
+     * profile fails closed (confirmed: a missing profiles.json makes
+     * resolve() return null for every bare-label token, same as a
+     * malformed one). Copy the current, live profiles.json here first,
+     * verify it, THEN promote this class.
+     *
+     * EDIT THIS on deployment, same as MAP_PATH.
      */
-    private const PROFILES_PATH = __DIR__.'/../profiles.json';
+    private const PROFILES_PATH = '/home/crockart/arch-mcp-secrets/profiles.json';
 
     public static function resolve(?string $token): ?array
     {
@@ -361,10 +383,10 @@ final class ArchProfiles
         }
 
         // New shape: tokens.json maps the token straight to a label
-        // string; the profile itself lives in the git-tracked
-        // profiles.json. Old shape (the full profile object inline) is
-        // still accepted below, unchanged — this is what lets the two
-        // shapes coexist in the same map during migration.
+        // string; the profile itself lives in profiles.json. Old shape
+        // (the full profile object inline) is still accepted below,
+        // unchanged — this is what let the two shapes coexist in the
+        // same map during the 2026-09-12 migration.
         if (\is_string($found)) {
             $found = self::lookupProfileByLabel($found);
         }
@@ -377,7 +399,7 @@ final class ArchProfiles
     }
 
     /**
-     * Look up a label's profile in the git-tracked profiles.json.
+     * Look up a label's profile in profiles.json.
      * Same fail-closed rule as MAP_PATH: unreadable, malformed, or
      * missing label all resolve to null.
      *
