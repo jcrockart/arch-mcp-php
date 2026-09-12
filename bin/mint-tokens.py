@@ -7,15 +7,50 @@ one yet.
     python3 mint-tokens.py --rotate LABEL   # replace one label's token
     python3 mint-tokens.py --url LABEL      # print a connector URL
     python3 mint-tokens.py --provision LABEL --root ROOT --lanes LANES
-                            [--write-extensions ext,ext,...] [--session-tools]
+                            [--write-extensions ext,ext,...]
+                            [--session-tools] [--read-only]
                                             # declare a brand-new profile in
                                             # profiles.json and mint its
                                             # token in one step
+    python3 mint-tokens.py --provision-project SLUG --env staging|prod
+                            --lanes LANES [--write-extensions ...]
+                            [--session-tools] [--read-only]
+                                            # same, but computes ROOT and
+                                            # LABEL from SLUG+ENV per the
+                                            # arch-projects convention
+                                            # below -- no path/label typing
 
 --lanes takes a comma-separated list of lane[:subpath] pairs, e.g.
 "site" -> {"site": ""}, or "metadata:metadata,site:site,core" for all
 three. A "site" or "metadata" lane needs --write-extensions (e.g.
---write-extensions php,css,sql,md) -- there is no safe default allow-list.
+--write-extensions php,css,sql,md) -- there is no safe default allow-list
+-- unless --read-only is given, which forces write_extensions to an
+explicit empty list ([]) instead: the lane's read/list tools stay
+available, every write is refused regardless of extension. That's the
+supported way to grant read-only site-lane access (e.g. so something can
+browse/diff a production checkout without ever being able to write to
+it) -- omitting --write-extensions entirely means "no write lane
+declared for this profile at all," which is a different, more implicit
+thing than "explicitly read-only."
+
+ARCH-PROJECTS CONVENTION (2026-09-12): real ARCH-governed projects (as
+opposed to ARCH-COLLAB's own core-asset repos -- core, mcp, arch-portal,
+arch-ops, requests, which stay under arch-collab/arch-collab-staging
+exactly as before) live at:
+
+    ~/arch-projects/<slug>            (production checkout)
+    ~/arch-projects-staging/<slug>    (staging checkout)
+
+served by default at arch.crockart.com.au/<slug> and
+arch-staging.crockart.com.au/<slug> respectively (a project can later
+move production to its own <slug>.crockart.com.au -- that only changes
+which document root is symlinked at the same checkout, nothing here).
+profiles.json labels follow the slug: "<slug>" for the production
+profile, "<slug>-staging" for staging -- see --provision-project above,
+which encodes exactly this mapping so it never has to be typed by hand.
+Both parent directories (~/arch-projects, ~/arch-projects-staging) are a
+one-time manual `mkdir` -- this script has never created directories
+outside ~/arch-mcp-secrets and doesn't start here either.
 
 MOVED 2026-09-12: profiles.json now lives at ~/arch-mcp-secrets/profiles.json,
 alongside tokens.json, instead of being git-tracked next to this script.
@@ -46,6 +81,9 @@ PROFILES = os.path.join(SECRETS_DIR, "profiles.json")
 MAP = os.path.join(SECRETS_DIR, "tokens.json")
 CHANGELOG = os.path.join(SECRETS_DIR, "profiles-changelog.jsonl")
 BASE = "https://mcp.crockart.com.au"
+
+PROJECTS_ROOT = os.path.expanduser("~/arch-projects")
+PROJECTS_STAGING_ROOT = os.path.expanduser("~/arch-projects-staging")
 
 
 def load_profiles():
@@ -188,7 +226,20 @@ def format_entry(label, entry):
     return '{}"{}": {{\n{}\n{}}}'.format(indent, label, body, indent)
 
 
-def provision(label, root, lanes, session_tools, write_extensions):
+def project_root_and_label(slug, env):
+    """Map a project slug + environment to (root, label) per the
+    arch-projects convention (see module docstring). The one place this
+    mapping is expressed -- --provision-project is a thin wrapper around
+    provision() using exactly this, so a hand-rolled --provision call can
+    still override any part of it if a project ever needs to."""
+    if env == "staging":
+        return os.path.join(PROJECTS_STAGING_ROOT, slug), "{}-staging".format(slug)
+    if env == "prod":
+        return os.path.join(PROJECTS_ROOT, slug), slug
+    raise ValueError("--env must be 'staging' or 'prod', got {!r}".format(env))
+
+
+def provision(label, root, lanes, session_tools, write_extensions, read_only=False):
     with open(PROFILES) as fh:
         raw = fh.read()
     profiles = json.loads(raw)
@@ -203,13 +254,21 @@ def provision(label, root, lanes, session_tools, write_extensions):
         print("--root should be an absolute path (e.g. /home/crockart/...).")
         return 1
 
-    if any(lane in ("site", "metadata") for lane in lanes) and not write_extensions:
+    if read_only:
+        # Explicit empty list, not "no write_extensions declared" (None).
+        # ArchProfiles/ArchTools treat None as *unrestricted* writes and
+        # [] as *always refused* -- see extensionAllowed() in
+        # ArchTools.php. --read-only exists so that distinction is a
+        # named flag instead of something you have to already know.
+        write_extensions = []
+    elif any(lane in ("site", "metadata") for lane in lanes) and not write_extensions:
         print("A site or metadata lane needs --write-extensions (e.g.")
         print("--write-extensions php,css,sql,md) — there's no safe default.")
+        print("Or pass --read-only if this profile should never write at all.")
         return 1
 
     entry = {"root": root, "lanes": lanes, "session_tools": session_tools}
-    if write_extensions:
+    if write_extensions is not None:
         entry["write_extensions"] = write_extensions
 
     if not os.path.isdir(root):
@@ -240,6 +299,9 @@ def provision(label, root, lanes, session_tools, write_extensions):
     log_change("provision", label, detail=entry)
 
     print("Added {!r} to {}.".format(label, PROFILES))
+    if read_only:
+        print("write_extensions is [] — every write tool this profile's")
+        print("lanes expose is refused; read/list tools work normally.")
     print("Minted its token and wrote it to {}.".format(MAP))
     print("{}/project/{}/  (send as X-Api-Key: {})".format(BASE, label, tok))
     print("This took effect immediately — profiles.json is no longer")
@@ -254,6 +316,25 @@ if __name__ == "__main__":
     def opt(flag, default=None):
         return args[args.index(flag) + 1] if flag in args else default
 
+    if "--provision-project" in args:
+        slug = opt("--provision-project")
+        env = opt("--env")
+        lanes_spec = opt("--lanes")
+        if not slug or not env or not lanes_spec:
+            print("--provision-project needs a slug, --env (staging or prod),")
+            print("and --lanes (e.g. --lanes core:,site:).")
+            sys.exit(1)
+        try:
+            root, label = project_root_and_label(slug, env)
+        except ValueError as exc:
+            print(str(exc))
+            sys.exit(1)
+        write_ext_spec = opt("--write-extensions")
+        write_extensions = write_ext_spec.split(",") if write_ext_spec else None
+        session_tools = "--session-tools" in args
+        read_only = "--read-only" in args
+        sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools,
+                            write_extensions, read_only=read_only))
     if "--provision" in args:
         label = opt("--provision")
         root = opt("--root")
@@ -265,7 +346,9 @@ if __name__ == "__main__":
         write_ext_spec = opt("--write-extensions")
         write_extensions = write_ext_spec.split(",") if write_ext_spec else None
         session_tools = "--session-tools" in args
-        sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools, write_extensions))
+        read_only = "--read-only" in args
+        sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools,
+                            write_extensions, read_only=read_only))
     if "--url" in args:
         sys.exit(show_url(opt("--url")))
     if "--rotate" in args:
