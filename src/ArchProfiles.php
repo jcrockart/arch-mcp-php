@@ -327,11 +327,16 @@ final class ArchProfiles
         return $m[1];
     }
 
-    /**
-     * Resolve a token to its profile, or null.
-     *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null}|null
+        /**
+     * Git-tracked, non-secret profile declarations. Lives alongside this
+     * file in the deployed checkout — same repo, so `git pull` on either
+     * environment updates both this file and profiles.json together.
+     * Contains root/lanes/write_extensions/etc for every label; contains
+     * no secrets. tokens.json (MAP_PATH, still outside the web root,
+     * still mode 600) now only has to say WHICH label a token belongs to.
      */
+    private const PROFILES_PATH = __DIR__.'/../profiles.json';
+
     public static function resolve(?string $token): ?array
     {
         if (null === $token || \strlen($token) < self::MIN_TOKEN_LENGTH) {
@@ -340,7 +345,6 @@ final class ArchProfiles
 
         $raw = @file_get_contents(self::MAP_PATH);
         if (false === $raw) {
-            // Unreadable map: refuse everything. Do NOT fall back.
             return null;
         }
 
@@ -349,14 +353,20 @@ final class ArchProfiles
             return null;
         }
 
-        // Compare every candidate with hash_equals rather than using the
-        // token as an array key, so lookup time does not vary with how
-        // much of a guessed token happens to be correct.
         $found = null;
-        foreach ($map as $candidate => $profile) {
+        foreach ($map as $candidate => $entry) {
             if (hash_equals((string) $candidate, $token)) {
-                $found = $profile;
+                $found = $entry;
             }
+        }
+
+        // New shape: tokens.json maps the token straight to a label
+        // string; the profile itself lives in the git-tracked
+        // profiles.json. Old shape (the full profile object inline) is
+        // still accepted below, unchanged — this is what lets the two
+        // shapes coexist in the same map during migration.
+        if (\is_string($found)) {
+            $found = self::lookupProfileByLabel($found);
         }
 
         if (!\is_array($found)) {
@@ -364,6 +374,31 @@ final class ArchProfiles
         }
 
         return self::validate($found);
+    }
+
+    /**
+     * Look up a label's profile in the git-tracked profiles.json.
+     * Same fail-closed rule as MAP_PATH: unreadable, malformed, or
+     * missing label all resolve to null.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function lookupProfileByLabel(string $label): ?array
+    {
+        $raw = @file_get_contents(self::PROFILES_PATH);
+        if (false === $raw) {
+            return null;
+        }
+
+        $profiles = json_decode($raw, true);
+        if (!\is_array($profiles) || !isset($profiles[$label]) || !\is_array($profiles[$label])) {
+            return null;
+        }
+
+        $profile = $profiles[$label];
+        $profile['label'] = $label; // profiles.json is keyed by label; validate() expects it inline too
+
+        return $profile;
     }
 
     /**

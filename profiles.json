@@ -1,0 +1,37 @@
+{
+  "arch-core-staging": {
+    "root": "/home/crockart/arch-collab-staging/core",
+    "lanes": { "metadata": "metadata", "site": "site", "core": "" },
+    "session_tools": true
+  },
+  "arch-core-prod": {
+    "root": "/home/crockart/arch-collab/core",
+    "lanes": { "core": "" },
+    "session_tools": false
+  },
+  "arch-mcp-prod": {
+    "root": "/home/crockart/arch-collab/mcp",
+    "lanes": { "core": "" },
+    "session_tools": false
+  },
+  "arch-mcp-staging": {
+    "root": "/home/crockart/arch-collab-staging/mcp",
+    "lanes": { "site": "", "core": "" },
+    "session_tools": false,
+    "write_extensions": ["php", "sh", "md", "txt", "json"]
+  },
+  "arch-requests-prod": {
+    "root": "/home/crockart/arch-collab/requests",
+    "lanes": { "site": "" },
+    "session_tools": false,
+    "write_extensions": ["php", "html", "css", "js", "json", "md", "txt"]
+  },
+  "rcp-dev": {
+    "root": "/home/crockart/public_html/rcp",
+    "lanes": { "site": "" },
+    "session_tools": false,
+    "write_extensions": ["html", "css", "js", "json", "txt", "md",
+                          "png", "jpg", "jpeg", "gif", "svg", "webp",
+                          "ico", "woff", "woff2", "ttf", "pdf"]
+  }
+}
