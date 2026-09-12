@@ -18,7 +18,7 @@
     "root": "/home/crockart/arch-collab-staging/mcp",
     "lanes": { "site": "", "core": "" },
     "session_tools": false,
-    "write_extensions": ["php", "sh", "md", "txt", "json"]
+    "write_extensions": ["php", "sh", "md", "txt", "json","py"]
   },
   "arch-requests-prod": {
     "root": "/home/crockart/arch-collab/requests",
@@ -33,5 +33,11 @@
     "write_extensions": ["html", "css", "js", "json", "txt", "md",
                           "png", "jpg", "jpeg", "gif", "svg", "webp",
                           "ico", "woff", "woff2", "ttf", "pdf"]
+  },
+  "arch-portal-staging": {
+    "root": "/home/crockart/arch-collab-staging/arch-portal",
+    "lanes": { "site": "" },
+    "session_tools": false,
+    "write_extensions": ["php", "css", "sql", "md"]
   }
 }
