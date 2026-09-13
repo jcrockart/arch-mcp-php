@@ -43,6 +43,12 @@ final class ArchTools
     /** @var list<string>|null lowercase extensions writable by this token; null = unrestricted */
     private ?array $writeExtensions;
 
+    /** Whether this profile may run archCoreGitPullFastForward(). Off by default. */
+    private bool $pullAllowed;
+
+    /** Branch this profile's gated pull fast-forwards to, e.g. "main". */
+    private string $pullBranch;
+
     /**
      * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
      *        Resolved token profile (ArchProfiles::resolve). Null is
@@ -59,6 +65,8 @@ final class ArchTools
         $this->repoPath = $profile['root'] ?? ArchConfig::REPO_PATH;
         $this->lanes = $profile['lanes'] ?? ['metadata' => 'metadata', 'site' => 'site'];
         $this->writeExtensions = $profile['write_extensions'] ?? null;
+        $this->pullAllowed = $profile['pull_allowed'] ?? false;
+        $this->pullBranch = $profile['pull_branch'] ?? 'main';
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -632,126 +640,233 @@ final class ArchTools
         return 'python3';
     }
 
-private const ALLOWED_GIT_SUBCOMMANDS = ['status', 'diff', 'log', 'show'];
+    private const ALLOWED_GIT_SUBCOMMANDS = ['status', 'diff', 'log', 'show', 'fetch'];
 
-/**
- * A caller-supplied ref or path that starts with '-' would be parsed by
- * git as a flag rather than a value — e.g. "--output=/tmp/x" turns a
- * read-only `git diff` into a write to an arbitrary path. Refusing
- * anything flag-shaped closes that off without needing to enumerate
- * every dangerous flag individually.
- */
-private function looksLikeFlag(string $value): bool
-{
-    return '' !== $value && str_starts_with($value, '-');
-}
+    /**
+     * A caller-supplied ref or path that starts with '-' would be parsed by
+     * git as a flag rather than a value — e.g. "--output=/tmp/x" turns a
+     * read-only `git diff` into a write to an arbitrary path. Refusing
+     * anything flag-shaped closes that off without needing to enumerate
+     * every dangerous flag individually.
+     */
+    private function looksLikeFlag(string $value): bool
+    {
+        return '' !== $value && str_starts_with($value, '-');
+    }
 
-/**
- * @param list<string> $args
- *
- * @return array{exit_code: int, stdout: string, stderr: string}
- */
-private function runGit(array $args): array
-{
-    $root = $this->laneRoot('core');
-    if (null === $root) {
-        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token has no core lane'];
+    /**
+     * Spawns `git <args>` rooted at $root (defaulting to this profile's
+     * core lane), with no allowlist check at all. Only called from two
+     * places: runGit() (which checks ALLOWED_GIT_SUBCOMMANDS first, for
+     * every caller-reachable read-only tool) and
+     * archCoreGitPullFastForward() (whose own args are 100% hardcoded, so
+     * there is nothing for a caller to inject regardless of this helper
+     * skipping the allowlist).
+     *
+     * @param list<string> $args
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    private function execGit(array $args, ?string $root = null): array
+    {
+        $root ??= $this->laneRoot('core');
+        if (null === $root) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token has no core lane'];
+        }
+        $command = array_merge(['git'], $args);
+        $descriptorSpec = [
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($command, $descriptorSpec, $pipes, $root);
+        if (!\is_resource($process)) {
+            $this->logger->error('Failed to spawn git process.', ['command' => $command]);
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'failed to spawn git'];
+        }
+        $stdout = stream_get_contents($pipes[1]) ?: '';
+        $stderr = stream_get_contents($pipes[2]) ?: '';
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        return ['exit_code' => proc_close($process), 'stdout' => $stdout, 'stderr' => $stderr];
     }
-    $subcommand = $args[0] ?? '';
-    if (!\in_array($subcommand, self::ALLOWED_GIT_SUBCOMMANDS, true)) {
-        return ['exit_code' => 1, 'stdout' => '', 'stderr' => "git subcommand '{$subcommand}' not permitted for this tool"];
-    }
-    $command = array_merge(['git'], $args);
-    $descriptorSpec = [
-        1 => ['pipe', 'w'],
-        2 => ['pipe', 'w'],
-    ];
-    $process = proc_open($command, $descriptorSpec, $pipes, $root);
-    if (!\is_resource($process)) {
-        $this->logger->error('Failed to spawn git process.', ['command' => $command]);
-        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'failed to spawn git'];
-    }
-    $stdout = stream_get_contents($pipes[1]) ?: '';
-    $stderr = stream_get_contents($pipes[2]) ?: '';
-    fclose($pipes[1]);
-    fclose($pipes[2]);
-    $exitCode = proc_close($process);
-    $this->logger->info('git invoked (core lane, read-only).', ['args' => $args, 'exit_code' => $exitCode]);
-    return ['exit_code' => $exitCode, 'stdout' => $stdout, 'stderr' => $stderr];
-}
 
-/**
- * Report the core lane's working-tree status (uncommitted changes).
- *
- * Read-only — status/diff/log/show are the only git subcommands this
- * tool will ever run; see runGit()'s allowlist. Never touches history
- * or the working tree.
- *
- * @return array{exit_code: int, stdout: string, stderr: string}
- */
-public function archCoreGitStatus(): array
-{
-    return $this->runGit(['status', '--short']);
-}
+    /**
+     * @param list<string> $args
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    private function runGit(array $args): array
+    {
+        $subcommand = $args[0] ?? '';
+        if (!\in_array($subcommand, self::ALLOWED_GIT_SUBCOMMANDS, true)) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => "git subcommand '{$subcommand}' not permitted for this tool"];
+        }
+        $result = $this->execGit($args);
+        $this->logger->info('git invoked (core lane, read-only).', ['args' => $args, 'exit_code' => $result['exit_code']]);
+        return $result;
+    }
 
-/**
- * Diff the core lane's working tree against a ref (default HEAD).
- *
- * @param string $ref  ref to diff against, e.g. "HEAD" or "origin/main"
- * @param string $path optional path to scope the diff to, relative to the core lane root
- *
- * @return array{exit_code: int, stdout: string, stderr: string}
- */
-public function archCoreGitDiff(string $ref = 'HEAD', string $path = ''): array
-{
-    if ($this->looksLikeFlag($ref) || $this->looksLikeFlag($path)) {
-        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'ref/path must not look like a flag'];
+    /**
+     * Report the core lane's working-tree status (uncommitted changes).
+     *
+     * Read-only — status/diff/log/show/fetch are the only git subcommands
+     * this tool will ever run through this dispatch; see runGit()'s
+     * allowlist. Never touches history or the working tree.
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    public function archCoreGitStatus(): array
+    {
+        return $this->runGit(['status', '--short']);
     }
-    $args = ['diff', $ref];
-    if ('' !== $path) {
-        $args[] = '--';
-        $args[] = $path;
-    }
-    return $this->runGit($args);
-}
 
-/**
- * Show recent commit history for the core lane.
- *
- * @param int    $count number of commits to show
- * @param string $path  optional path to scope the log to
- *
- * @return array{exit_code: int, stdout: string, stderr: string}
- */
-public function archCoreGitLog(int $count = 10, string $path = ''): array
-{
-    if ($this->looksLikeFlag($path)) {
-        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'path must not look like a flag'];
+    /**
+     * Diff the core lane's working tree against a ref (default HEAD).
+     *
+     * @param string $ref  ref to diff against, e.g. "HEAD" or "origin/main"
+     * @param string $path optional path to scope the diff to, relative to the core lane root
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    public function archCoreGitDiff(string $ref = 'HEAD', string $path = ''): array
+    {
+        if ($this->looksLikeFlag($ref) || $this->looksLikeFlag($path)) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'ref/path must not look like a flag'];
+        }
+        $args = ['diff', $ref];
+        if ('' !== $path) {
+            $args[] = '--';
+            $args[] = $path;
+        }
+        return $this->runGit($args);
     }
-    $args = ['log', '--oneline', '-'.max(1, $count)];
-    if ('' !== $path) {
-        $args[] = '--';
-        $args[] = $path;
-    }
-    return $this->runGit($args);
-}
 
-/**
- * Show a file's content as of a given ref, without touching the working
- * tree — e.g. compare what's on disk in staging against origin/main.
- *
- * @param string $ref  a commit, branch, or tag
- * @param string $path path relative to the core lane root
- *
- * @return array{exit_code: int, stdout: string, stderr: string}
- */
-public function archCoreGitShow(string $ref, string $path): array
-{
-    if ($this->looksLikeFlag($ref) || $this->looksLikeFlag($path)) {
-        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'ref/path must not look like a flag'];
+    /**
+     * Show recent commit history for the core lane.
+     *
+     * @param int    $count number of commits to show
+     * @param string $path  optional path to scope the log to
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    public function archCoreGitLog(int $count = 10, string $path = ''): array
+    {
+        if ($this->looksLikeFlag($path)) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'path must not look like a flag'];
+        }
+        $args = ['log', '--oneline', '-'.max(1, $count)];
+        if ('' !== $path) {
+            $args[] = '--';
+            $args[] = $path;
+        }
+        return $this->runGit($args);
     }
-    return $this->runGit(['show', "{$ref}:{$path}"]);
-}    
-    
-    
+
+    /**
+     * Show a file's content as of a given ref, without touching the working
+     * tree — e.g. compare what's on disk in staging against origin/main.
+     *
+     * @param string $ref  a commit, branch, or tag
+     * @param string $path path relative to the core lane root
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    public function archCoreGitShow(string $ref, string $path): array
+    {
+        if ($this->looksLikeFlag($ref) || $this->looksLikeFlag($path)) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'ref/path must not look like a flag'];
+        }
+        return $this->runGit(['show', "{$ref}:{$path}"]);
+    }
+
+    /**
+     * Report the core lane's remote-tracking state without touching the
+     * working tree, index, or any local branch -- `git fetch` only ever
+     * downloads objects and updates refs/remotes/origin/*. Available to
+     * any core-lane profile, no separate opt-in, since this is exactly as
+     * read-only as status/diff/log/show above.
+     *
+     * No caller-supplied arguments: always `git fetch origin`. Combined
+     * with archCoreGitDiff('origin/<branch>'), this is the whole "preview
+     * what would land" mechanism -- no write-capable code involved.
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string}
+     */
+    public function archCoreGitFetch(): array
+    {
+        return $this->runGit(['fetch', 'origin']);
+    }
+
+    /**
+     * The one write-capable git operation this server exposes: fast-forward
+     * this profile's checkout to the tip of origin/<pull_branch>.
+     *
+     * Deliberately narrower than every read-only tool above:
+     *  - Refused outright unless this profile was provisioned with
+     *    pull_allowed=true (mint-tokens.py --allow-pull) -- opt-in per
+     *    profile, nothing gains this silently.
+     *  - Takes NO caller-supplied arguments at all -- not the branch, not
+     *    a ref, nothing. The only variable is which profile is calling,
+     *    and that profile's pull_branch was fixed at provisioning time by
+     *    whoever ran mint-tokens.py, never by the live MCP request. This
+     *    removes the argument-injection class of risk this file's other
+     *    git methods guard against via looksLikeFlag() -- there is simply
+     *    nothing here for a caller to inject into.
+     *  - Refuses to run at all if the working tree isn't clean
+     *    (`git status --porcelain` non-empty) -- a production checkout
+     *    should never have local drift, and this never guesses past one.
+     *  - `merge --ff-only`, never plain `pull` or a real merge -- fast-
+     *    forward or nothing. If origin and this checkout have diverged,
+     *    the merge fails and returns a non-zero exit code; nothing is left
+     *    partially applied, no conflict markers are ever written.
+     *  - Reachable only through this dedicated method, via execGit()
+     *    directly -- NOT through runGit()'s allowlist-checked dispatch, so
+     *    there remains no way to get an arbitrary git subcommand executed
+     *    through the generic, caller-args-accepted path. That invariant
+     *    (status/diff/log/show/fetch are the only subcommands runGit()
+     *    will ever run) is unchanged by this method's existence.
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string, before?: string, after?: string, pulled?: bool}
+     */
+    public function archCoreGitPullFastForward(): array
+    {
+        if (!$this->pullAllowed) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token is not permitted to pull'];
+        }
+
+        $root = $this->laneRoot('core');
+        if (null === $root) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token has no core lane'];
+        }
+
+        $status = $this->execGit(['status', '--porcelain'], $root);
+        if (0 !== $status['exit_code']) {
+            return $status;
+        }
+        if ('' !== trim($status['stdout'])) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'working tree is not clean -- refusing to pull'];
+        }
+
+        $fetch = $this->execGit(['fetch', 'origin'], $root);
+        if (0 !== $fetch['exit_code']) {
+            return $fetch;
+        }
+
+        $before = trim($this->execGit(['rev-parse', 'HEAD'], $root)['stdout']);
+        $merge = $this->execGit(['merge', '--ff-only', 'origin/'.$this->pullBranch], $root);
+        $after = trim($this->execGit(['rev-parse', 'HEAD'], $root)['stdout']);
+
+        $merge['before'] = $before;
+        $merge['after'] = $after;
+        $merge['pulled'] = 0 === $merge['exit_code'] && $before !== $after;
+
+        $this->logger->info('git pull --ff-only (core lane, gated).', [
+            'branch' => $this->pullBranch,
+            'before' => $before,
+            'after' => $after,
+            'exit_code' => $merge['exit_code'],
+        ]);
+
+        return $merge;
+    }
 }

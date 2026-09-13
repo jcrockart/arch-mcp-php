@@ -157,7 +157,22 @@ if (isset($profile['lanes']['core'])) {
         ->addTool([ArchTools::class, 'archCoreGitStatus'], 'arch_core_git_status')
         ->addTool([ArchTools::class, 'archCoreGitDiff'], 'arch_core_git_diff')
         ->addTool([ArchTools::class, 'archCoreGitLog'], 'arch_core_git_log')
-        ->addTool([ArchTools::class, 'archCoreGitShow'], 'arch_core_git_show');
+        ->addTool([ArchTools::class, 'archCoreGitShow'], 'arch_core_git_show')
+        ->addTool([ArchTools::class, 'archCoreGitFetch'], 'arch_core_git_fetch');
+}
+
+// Added 2026-09-12, alongside item 3 ("pull to production"). Deliberately
+// a SEPARATE conditional block from the unconditional core-lane block
+// above, gated on the profile's pull_allowed flag (set only via
+// mint-tokens.py --allow-pull) — a profile without the flag doesn't even
+// see this tool exists, matching the "advertised list is a filter,
+// runtime check is the real control, both required" principle already in
+// effect for every other lane above. The runtime check lives in
+// ArchTools::archCoreGitPullFastForward() itself ($this->pullAllowed),
+// so this gate is belt-and-suspenders, not the only enforcement.
+if (isset($profile['lanes']['core']) && ($profile['pull_allowed'] ?? false)) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull');
 }
 
 // Added 2026-08-31, deployed with James live at the terminal after an

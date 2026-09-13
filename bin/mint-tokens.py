@@ -9,16 +9,28 @@ one yet.
     python3 mint-tokens.py --provision LABEL --root ROOT --lanes LANES
                             [--write-extensions ext,ext,...]
                             [--session-tools] [--read-only]
+                            [--allow-pull [--pull-branch BRANCH]]
                                             # declare a brand-new profile in
                                             # profiles.json and mint its
                                             # token in one step
     python3 mint-tokens.py --provision-project SLUG --env staging|prod
                             --lanes LANES [--write-extensions ...]
                             [--session-tools] [--read-only]
+                            [--allow-pull [--pull-branch BRANCH]]
                                             # same, but computes ROOT and
                                             # LABEL from SLUG+ENV per the
                                             # arch-projects convention
                                             # below -- no path/label typing
+
+--allow-pull sets pull_allowed: true on the entry (needs a core lane),
+letting this profile call the gated arch_core_git_pull tool -- a
+fast-forward-only `git fetch` + `merge --ff-only origin/<branch>`, no
+other git write capability, no caller-supplied arguments. --pull-branch
+overrides the default target branch ("main") if a project uses another
+name. See claude/proposal-arch-mcp-core-pull-lane.md -- the PHP side
+(ArchTools.php/ArchProfiles.php) this depends on is proposed, not yet
+applied, so pull_allowed/pull_branch are silently dropped by the live
+validate() today, same as managed_by was before --apply-state shipped.
     python3 mint-tokens.py --apply-state PATH [--force-prune]
                                             # reconcile every Portal-managed
                                             # label to match a full desired
@@ -305,6 +317,10 @@ def format_entry(label, entry):
     if "write_extensions" in entry:
         fields.append('{}  "write_extensions": {}'.format(
             indent, format_write_extensions(entry["write_extensions"], indent + "  ")))
+    if entry.get("pull_allowed"):
+        fields.append('{}  "pull_allowed": true'.format(indent))
+    if "pull_branch" in entry:
+        fields.append('{}  "pull_branch": "{}"'.format(indent, entry["pull_branch"]))
     body = ",\n".join(fields)
     return '{}"{}": {{\n{}\n{}}}'.format(indent, label, body, indent)
 
@@ -322,7 +338,8 @@ def project_root_and_label(slug, env):
     raise ValueError("--env must be 'staging' or 'prod', got {!r}".format(env))
 
 
-def provision(label, root, lanes, session_tools, write_extensions, read_only=False):
+def provision(label, root, lanes, session_tools, write_extensions, read_only=False,
+              allow_pull=False, pull_branch=None):
     with open(PROFILES) as fh:
         raw = fh.read()
     profiles = json.loads(raw)
@@ -335,6 +352,11 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
 
     if not root.startswith("/"):
         print("--root should be an absolute path (e.g. /home/crockart/...).")
+        return 1
+
+    if allow_pull and "core" not in lanes:
+        print("--allow-pull needs a core lane (e.g. --lanes core:,site:) --")
+        print("the pull mechanism runs against the core lane's checkout.")
         return 1
 
     if read_only:
@@ -353,6 +375,10 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
     entry = {"root": root, "lanes": lanes, "session_tools": session_tools}
     if write_extensions is not None:
         entry["write_extensions"] = write_extensions
+    if allow_pull:
+        entry["pull_allowed"] = True
+        if pull_branch and pull_branch != "main":
+            entry["pull_branch"] = pull_branch
 
     if not os.path.isdir(root):
         print("Warning: {} doesn't exist on disk yet.".format(root))
@@ -384,6 +410,10 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
     if read_only:
         print("write_extensions is [] — every write tool this profile's")
         print("lanes expose is refused; read/list tools work normally.")
+    if allow_pull:
+        print("pull_allowed is true — this profile can run the gated")
+        print("fast-forward pull against origin/{}, once the PHP side ships.".format(
+            pull_branch or "main"))
     print("Minted its token and wrote it to {}.".format(MAP))
     print("{}/project/{}/  (send as X-Api-Key: {})".format(BASE, label, tok))
     print("This took effect immediately — profiles.json is no longer")
@@ -419,11 +449,23 @@ def validate_entry_dict(label, entry):
     if not isinstance(session_tools, bool):
         return "{!r}: session_tools must be a boolean".format(label)
 
+    pull_allowed = entry.get("pull_allowed", False)
+    if not isinstance(pull_allowed, bool):
+        return "{!r}: pull_allowed must be a boolean".format(label)
+    if pull_allowed and "core" not in lanes:
+        return "{!r}: pull_allowed needs a core lane".format(label)
+
+    pull_branch = entry.get("pull_branch")
+    if pull_branch is not None and (not isinstance(pull_branch, str) or not pull_branch
+                                     or pull_branch.startswith("-")):
+        return "{!r}: pull_branch must be a non-empty string not starting with '-'".format(label)
+
     # "managed_by" is this script's own bookkeeping field -- an incoming
     # entry setting it itself would be spoofing which labels apply-state
     # is allowed to prune later, so it's rejected here rather than
     # silently overwritten.
-    allowed_keys = {"root", "lanes", "session_tools", "write_extensions"}
+    allowed_keys = {"root", "lanes", "session_tools", "write_extensions",
+                    "pull_allowed", "pull_branch"}
     extra_keys = set(entry) - allowed_keys
     if extra_keys:
         return "{!r}: unexpected field(s): {}".format(label, ", ".join(sorted(extra_keys)))
@@ -578,8 +620,11 @@ if __name__ == "__main__":
         write_extensions = write_ext_spec.split(",") if write_ext_spec else None
         session_tools = "--session-tools" in args
         read_only = "--read-only" in args
+        allow_pull = "--allow-pull" in args
+        pull_branch = opt("--pull-branch")
         sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools,
-                            write_extensions, read_only=read_only))
+                            write_extensions, read_only=read_only,
+                            allow_pull=allow_pull, pull_branch=pull_branch))
     if "--provision" in args:
         label = opt("--provision")
         root = opt("--root")
@@ -592,8 +637,11 @@ if __name__ == "__main__":
         write_extensions = write_ext_spec.split(",") if write_ext_spec else None
         session_tools = "--session-tools" in args
         read_only = "--read-only" in args
+        allow_pull = "--allow-pull" in args
+        pull_branch = opt("--pull-branch")
         sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools,
-                            write_extensions, read_only=read_only))
+                            write_extensions, read_only=read_only,
+                            allow_pull=allow_pull, pull_branch=pull_branch))
     if "--url" in args:
         sys.exit(show_url(opt("--url")))
     if "--rotate" in args:

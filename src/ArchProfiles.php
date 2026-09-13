@@ -428,7 +428,7 @@ final class ArchProfiles
      *
      * @param array<string, mixed> $profile
      *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null}|null
+     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string}|null
      */
     private static function validate(array $profile): ?array
     {
@@ -480,9 +480,35 @@ final class ArchProfiles
                 }
                 $writeExt[] = $ext;
             }
-            if ([] === $writeExt) {
+            // NOT rejected when empty. write_extensions: [] is a valid,
+            // deliberate value -- "every write refused, reads/lists still
+            // work" -- distinct from omitting the key entirely (null =
+            // unrestricted). Fixed 2026-09-12: this used to `return null`
+            // right here, which rejected the WHOLE PROFILE the instant
+            // write_extensions was [], so a --read-only-provisioned
+            // profile 404'd on every call, not just writes.
+            // extensionAllowed() in ArchTools.php already treats []
+            // correctly (every in_array() check against it is false) --
+            // this was the one place upstream of that logic still wrong.
+        }
+
+        // Gated per-profile: whether this token may run the one
+        // write-capable git operation this server exposes -- a hardcoded,
+        // zero-caller-argument `fetch` + `merge --ff-only`. Absent/false
+        // by default; only a profile explicitly provisioned with
+        // --allow-pull (mint-tokens.py) carries this. See
+        // archCoreGitPullFastForward() in ArchTools.php.
+        $pullAllowed = true === ($profile['pull_allowed'] ?? false);
+
+        $pullBranch = 'main';
+        if (isset($profile['pull_branch'])) {
+            if (!\is_string($profile['pull_branch'])
+                || 1 !== preg_match('/^[A-Za-z0-9._\/-]{1,100}$/', $profile['pull_branch'])
+                || str_starts_with($profile['pull_branch'], '-')
+            ) {
                 return null;
             }
+            $pullBranch = $profile['pull_branch'];
         }
 
         // "project" (default) or "group". A group's root holds one
@@ -500,6 +526,8 @@ final class ArchProfiles
             'lanes' => $cleanLanes,
             'session_tools' => true === ($profile['session_tools'] ?? false),
             'write_extensions' => $writeExt,
+            'pull_allowed' => $pullAllowed,
+            'pull_branch' => $pullBranch,
         ];
     }
 }
