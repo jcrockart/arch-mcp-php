@@ -175,6 +175,17 @@ if (isset($profile['lanes']['core']) && ($profile['pull_allowed'] ?? false)) {
         ->addTool([ArchTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull');
 }
 
+// Added 2026-09-13, item 4 ("push to origin"). Same pattern as the
+// pull_allowed block above: a profile without push_allowed doesn't even
+// see this tool exists. Setting push_allowed alone does nothing live
+// until a deploy key with write access to that checkout's GitHub origin
+// is also configured on the host -- this file and ArchTools.php never
+// create, store, or read one.
+if (isset($profile['lanes']['core']) && ($profile['push_allowed'] ?? false)) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push');
+}
+
 // Added 2026-08-31, deployed with James live at the terminal after an
 // overnight draft-and-test cycle (not shipped unattended — see Codegen
 // CLI Design §8 for why). Deliberately separate name prefix

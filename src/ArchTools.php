@@ -49,6 +49,12 @@ final class ArchTools
     /** Branch this profile's gated pull fast-forwards to, e.g. "main". */
     private string $pullBranch;
 
+    /** Whether this profile may run archCoreGitPushOrigin(). Off by default. */
+    private bool $pushAllowed;
+
+    /** Branch this profile's gated push pushes to, e.g. "main". */
+    private string $pushBranch;
+
     /**
      * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
      *        Resolved token profile (ArchProfiles::resolve). Null is
@@ -67,6 +73,8 @@ final class ArchTools
         $this->writeExtensions = $profile['write_extensions'] ?? null;
         $this->pullAllowed = $profile['pull_allowed'] ?? false;
         $this->pullBranch = $profile['pull_branch'] ?? 'main';
+        $this->pushAllowed = $profile['push_allowed'] ?? false;
+        $this->pushBranch = $profile['push_branch'] ?? 'main';
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -868,5 +876,102 @@ final class ArchTools
         ]);
 
         return $merge;
+    }
+
+    /**
+     * The other write-capable git operation this server can expose: push
+     * this profile's checkout to origin/<push_branch>. Deliberately the
+     * most restricted method in this file.
+     *
+     * Preconditions, all enforced before any git process spawns:
+     *  - Refused outright unless this profile was provisioned with
+     *    push_allowed=true (mint-tokens.py --allow-push) -- off by
+     *    default, opt-in per project, same as pull_allowed.
+     *  - Refused if this host has no push-capable credential for this
+     *    checkout's origin -- this method never supplies one itself (no
+     *    deploy key is created, stored, or read anywhere in this file);
+     *    if none is configured, `git push` fails on its own with a
+     *    normal authentication error, surfaced as this call's stderr.
+     *  - Requires the caller to name the commit it believes is current
+     *    HEAD ($expectedHead) and refuses unless it matches exactly.
+     *    This is the "diff-then-confirm" contract the SOW asked for,
+     *    made mechanical rather than a documentation-only convention:
+     *    the caller must first call a read-only tool (status/log/show)
+     *    to learn the real current HEAD -- there is no way to satisfy
+     *    this check without having looked. If local state moved between
+     *    that check and this call (another push, a new local commit),
+     *    the mismatch refuses the push rather than pushing something
+     *    the caller never actually saw.
+     *
+     * Otherwise narrower than every read-only tool in the same ways
+     * archCoreGitPullFastForward() is narrower than status/diff/log/show:
+     *  - Takes no caller-supplied branch or ref -- push_branch was fixed
+     *    at provisioning time, never supplied by the live MCP request.
+     *  - Never `--force` / `--force-with-lease`, never any history
+     *    rewrite. A plain `git push origin <push_branch>` is REJECTED BY
+     *    GIT ITSELF (and by GitHub, remote-side) if it is not a
+     *    fast-forward of the remote branch -- this method adds no logic
+     *    of its own to enforce that; it relies on git's own default
+     *    behaviour exactly the way archCoreGitPullFastForward() relies on
+     *    `merge --ff-only` rather than reimplementing a safety check.
+     *  - Reachable only through this dedicated method, via execGit()
+     *    directly -- not through runGit()'s allowlist-checked dispatch.
+     *    `push` is not, and must never become, a member of
+     *    ALLOWED_GIT_SUBCOMMANDS.
+     *
+     * @param string $expectedHead the commit hash the caller believes is
+     *                             current HEAD, obtained from a prior
+     *                             read-only call (e.g. arch_core_git_log)
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string, branch?: string, head?: string, pushed?: bool}
+     */
+    public function archCoreGitPushOrigin(string $expectedHead): array
+    {
+        if (!$this->pushAllowed) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token is not permitted to push'];
+        }
+
+        // Full or abbreviated hex only -- never a symbolic ref like
+        // "HEAD" or a branch name. The whole point of this parameter is
+        // to pin an exact commit the caller already observed; accepting
+        // anything resolvable would let a caller "confirm" without
+        // having actually looked.
+        if ('' === $expectedHead || 1 !== preg_match('/^[0-9a-fA-F]{7,40}$/', $expectedHead)) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'expected_head must be a full or abbreviated commit hash'];
+        }
+
+        $root = $this->laneRoot('core');
+        if (null === $root) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token has no core lane'];
+        }
+
+        $headResult = $this->execGit(['rev-parse', 'HEAD'], $root);
+        if (0 !== $headResult['exit_code']) {
+            return $headResult;
+        }
+        $head = trim($headResult['stdout']);
+
+        $resolvedExpected = trim($this->execGit(['rev-parse', '--verify', '--quiet', $expectedHead], $root)['stdout']);
+        if ('' === $resolvedExpected || $resolvedExpected !== $head) {
+            return [
+                'exit_code' => 1,
+                'stdout' => '',
+                'stderr' => 'expected_head does not match current HEAD ('.$head.') -- refusing to push; '
+                    .'local state may have changed since you checked, re-run a preview and try again',
+            ];
+        }
+
+        $push = $this->execGit(['push', 'origin', $this->pushBranch], $root);
+        $push['branch'] = $this->pushBranch;
+        $push['head'] = $head;
+        $push['pushed'] = 0 === $push['exit_code'];
+
+        $this->logger->info('git push (core lane, gated).', [
+            'branch' => $this->pushBranch,
+            'head' => $head,
+            'exit_code' => $push['exit_code'],
+        ]);
+
+        return $push;
     }
 }

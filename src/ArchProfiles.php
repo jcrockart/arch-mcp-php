@@ -428,7 +428,7 @@ final class ArchProfiles
      *
      * @param array<string, mixed> $profile
      *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string}|null
+     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string}|null
      */
     private static function validate(array $profile): ?array
     {
@@ -511,6 +511,29 @@ final class ArchProfiles
             $pullBranch = $profile['pull_branch'];
         }
 
+        // Gated per-profile, same treatment as pull_allowed/pull_branch
+        // above: whether this token may run the one OTHER write-capable
+        // git operation this server exposes -- a hardcoded,
+        // zero-caller-argument-branch `push origin <push_branch>` (never
+        // --force). Absent/false by default; only a profile explicitly
+        // provisioned with --allow-push (mint-tokens.py) carries this.
+        // Setting this field alone does nothing unless a deploy key with
+        // write access to that repo's GitHub origin is also configured
+        // on this host -- this server never creates or holds one. See
+        // archCoreGitPushOrigin() in ArchTools.php.
+        $pushAllowed = true === ($profile['push_allowed'] ?? false);
+
+        $pushBranch = 'main';
+        if (isset($profile['push_branch'])) {
+            if (!\is_string($profile['push_branch'])
+                || 1 !== preg_match('/^[A-Za-z0-9._\/-]{1,100}$/', $profile['push_branch'])
+                || str_starts_with($profile['push_branch'], '-')
+            ) {
+                return null;
+            }
+            $pushBranch = $profile['push_branch'];
+        }
+
         // "project" (default) or "group". A group's root holds one
         // subdirectory per sub-project; the URL selects which.
         $kind = $profile['kind'] ?? 'project';
@@ -528,6 +551,8 @@ final class ArchProfiles
             'write_extensions' => $writeExt,
             'pull_allowed' => $pullAllowed,
             'pull_branch' => $pullBranch,
+            'push_allowed' => $pushAllowed,
+            'push_branch' => $pushBranch,
         ];
     }
 }
