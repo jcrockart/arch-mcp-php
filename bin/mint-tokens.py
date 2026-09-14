@@ -5,6 +5,7 @@ one yet.
 
     python3 mint-tokens.py                 # mint any missing tokens
     python3 mint-tokens.py --rotate LABEL   # replace one label's token
+    python3 mint-tokens.py --remove LABEL   # delete a profile and revoke its token
     python3 mint-tokens.py --url LABEL      # print a connector URL
     python3 mint-tokens.py --provision LABEL --root ROOT --lanes LANES
                             [--write-extensions ext,ext,...]
@@ -68,6 +69,22 @@ added to this same-default-as-site/metadata rule 2026-09-13; it is not a
 new mechanism, just a third lane name subject to the identical
 no-safe-default reasoning.)
 
+--remove LABEL deletes a profile from profiles.json entirely and revokes
+every token pointing at it from tokens.json -- for winding down a
+manually-provisioned profile (via --provision/--provision-project) whose
+job is done, e.g. a throwaway demo profile minted to live-test something.
+Refuses outright if the label is Portal-managed ("managed_by":
+"arch-portal") -- those are apply-state's to remove, via Portal's own
+delete flow supplying a state document without that label (plus
+--force-prune), so Portal's own state document stays the one source of
+truth for the labels it owns instead of silently drifting out of sync
+with a manual --remove run it never saw. Like --apply-state (and unlike
+--provision's hand-formatted text splice), --remove rewrites the whole
+of profiles.json via json.dumps(indent=2, sort_keys=True) -- every
+other entry's *content* is asserted byte-for-byte unchanged before
+anything is written, but the file's overall formatting/key order is
+normalized in the process, same side effect --apply-state already has.
+
 ARCH-PROJECTS CONVENTION (2026-09-12): real ARCH-governed projects (as
 opposed to ARCH-COLLAB's own core-asset repos -- core, mcp, arch-portal,
 arch-ops, requests, which stay under arch-collab/arch-collab-staging
@@ -130,7 +147,8 @@ the whole call -- nothing partial is ever written, the same rule
 
 Both files are written atomically (temp file in the same directory,
 then a single os.replace()) -- true of every write this script makes
-now, including --provision/--rotate/plain minting, not just --apply-state.
+now, including --provision/--rotate/--remove/plain minting, not just
+--apply-state.
 
 MOVED 2026-09-12: profiles.json now lives at ~/arch-mcp-secrets/profiles.json,
 alongside tokens.json, instead of being git-tracked next to this script.
@@ -145,8 +163,8 @@ only thing that edits profiles.json, the same way it was already the
 only thing that edits tokens.json -- both live, both outside git.
 
 profiles-changelog.jsonl (same directory) replaces the git history this
-move gives up: one JSON line per provision/rotate/mint/apply-state, so
-"who added what, when" is still answerable without needing blame on a
+move gives up: one JSON line per provision/rotate/remove/mint/apply-state,
+so "who added what, when" is still answerable without needing blame on a
 file nothing was reviewing per-line anyway.
 """
 
@@ -295,6 +313,52 @@ def rotate(label):
     log_change("rotate", label)
     print("Rotated {}'s token. Its connector must be re-registered; every".format(label))
     print("other label's token is untouched.")
+    return 0
+
+
+def remove(label):
+    """Delete a manually-provisioned profile entirely: drop its entry
+    from profiles.json and revoke every token pointing at it from
+    tokens.json. Refuses for a Portal-managed label -- see the
+    --remove section of the module docstring for why."""
+    profiles = load_profiles()
+    if label not in profiles:
+        print("{!r} is not declared in {}.".format(label, PROFILES))
+        return 1
+
+    entry = profiles[label]
+    if isinstance(entry, dict) and entry.get("managed_by") == MANAGED_BY:
+        print("{!r} is managed by Portal (\"managed_by\": {!r}).".format(label, MANAGED_BY))
+        print("Remove it through apply-state (Portal's own delete flow, with")
+        print("--force-prune), not --remove, so Portal's state document stays")
+        print("the one source of truth for the labels it owns.")
+        return 1
+
+    new_profiles = {k: v for k, v in profiles.items() if k != label}
+    profiles_text = json.dumps(new_profiles, indent=2, sort_keys=True) + "\n"
+
+    reparsed = json.loads(profiles_text)
+    assert label not in reparsed, \
+        "removed label still present after rewrite -- aborting, nothing written"
+    assert set(reparsed) == set(profiles) - {label}, \
+        "rewritten profiles.json lost or gained an unrelated profile -- aborting, nothing written"
+    for other in reparsed:
+        assert reparsed[other] == profiles[other], (
+            "rewritten profiles.json altered {!r}, which --remove doesn't "
+            "touch -- aborting, nothing written".format(other)
+        )
+
+    tokens = load_tokens()
+    removed_count = sum(1 for v in tokens.values() if token_label(v) == label)
+    new_tokens = {t: v for t, v in tokens.items() if token_label(v) != label}
+
+    atomic_write(PROFILES, profiles_text, 0o644)
+    save_tokens(new_tokens)
+    log_change("remove", label, detail=entry)
+
+    print("Removed {!r} from {} and revoked {} token(s) from {}.".format(
+        label, PROFILES, removed_count, MAP))
+    print("Its connector, if registered anywhere, will now 404 on every call.")
     return 0
 
 
@@ -699,4 +763,6 @@ if __name__ == "__main__":
         sys.exit(show_url(opt("--url")))
     if "--rotate" in args:
         sys.exit(rotate(opt("--rotate")))
+    if "--remove" in args:
+        sys.exit(remove(opt("--remove")))
     sys.exit(mint_missing())
