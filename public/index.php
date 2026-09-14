@@ -198,6 +198,21 @@ if (isset($profile['lanes']['site'])) {
         ->addTool([ArchTools::class, 'archSiteListFiles'], 'arch_site_list_files');
 }
 
+// Added for the AI-context "assets" lane — see
+// claude/proposal-arch-mcp-assets-lane.md. Same pattern as the site-lane
+// block above: a profile without an 'assets' lane doesn't even see
+// these tools exist. Used two ways: the per-project profile's own
+// read/write assets lane, and every project's read-only
+// "<slug>-bootstrap" profile pointed at the shared framework root
+// (read-only enforced the normal way, via write_extensions: [] set by
+// mint-tokens.py --read-only — there is no separate mechanism here).
+if (isset($profile['lanes']['assets'])) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archAssetsWriteFile'], 'arch_assets_write_file')
+        ->addTool([ArchTools::class, 'archAssetsReadFile'], 'arch_assets_read_file')
+        ->addTool([ArchTools::class, 'archAssetsListFiles'], 'arch_assets_list_files');
+}
+
 $server = $builder
     ->setCapabilities(new ServerCapabilities(
         tools: true,

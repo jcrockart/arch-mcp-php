@@ -460,6 +460,122 @@ final class ArchTools
     }
 
     /**
+     * Added for the AI-context "assets" lane — see
+     * claude/proposal-arch-mcp-assets-lane.md. A new sibling directory to
+     * metadata/ and site/ at the repo root, holding curated material
+     * meant to be loaded into an AI session's own project context /
+     * knowledge base — not the project's governed runtime metadata, and
+     * not its served website output. Deliberately not session-gated,
+     * same reasoning as site/: disposable, regenerable content that
+     * validate.py and arch_session_commit never look at.
+     *
+     * Same path-traversal discipline as archSessionWriteFile/
+     * archSiteWriteFile, just rooted at assets/ instead — see
+     * resolveScopedPath. Write access is governed by the same
+     * $writeExtensions allowlist every other write method here already
+     * uses — a profile provisioned read-only (write_extensions: [], via
+     * mint-tokens.py --read-only) can still call this, it is just always
+     * refused, the same way a read-only site lane already behaves.
+     *
+     * @param string $path    relative path under assets/, e.g. "ARCH-CONSTITUTION.md"
+     * @param string $content full file content to write
+     *
+     * @return array<string, mixed>
+     */
+    public function archAssetsWriteFile(string $path, string $content): array
+    {
+        if (!$this->extensionAllowed($path)) {
+            return ['success' => false, 'error' => "file type not permitted for this token: '{$path}'"];
+        }
+
+        $resolved = $this->resolveAssetsPath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside assets/"];
+        }
+
+        $dir = \dirname($resolved);
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return ['success' => false, 'error' => "could not create directory for '{$path}'"];
+        }
+
+        if (false === file_put_contents($resolved, $content)) {
+            return ['success' => false, 'error' => "failed to write '{$path}'"];
+        }
+
+        $this->logger->info('Assets file written.', ['path' => $path, 'bytes' => \strlen($content)]);
+
+        return ['success' => true, 'path' => $path, 'bytes' => \strlen($content)];
+    }
+
+    /**
+     * Read a file's current content from assets/. Always safe, no
+     * session required, mirrors archSiteReadFile.
+     *
+     * @param string $path relative path under assets/
+     *
+     * @return array<string, mixed>
+     */
+    public function archAssetsReadFile(string $path): array
+    {
+        $resolved = $this->resolveAssetsPath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside assets/"];
+        }
+
+        if (!is_file($resolved)) {
+            return ['success' => false, 'error' => "'{$path}' does not exist"];
+        }
+
+        $content = file_get_contents($resolved);
+        if (false === $content) {
+            return ['success' => false, 'error' => "failed to read '{$path}'"];
+        }
+
+        return ['success' => true, 'path' => $path, 'content' => $content];
+    }
+
+    /**
+     * List every file currently in assets/, mirrors archSiteListFiles.
+     *
+     * @return array<string, mixed>
+     */
+    public function archAssetsListFiles(): array
+    {
+        $root = $this->laneRoot('assets');
+        if (null === $root || !is_dir($root)) {
+            return ['success' => true, 'files' => []];
+        }
+
+        $files = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $fileInfo) {
+            if (!$fileInfo->isFile()) {
+                continue;
+            }
+            $rel = ltrim(str_replace($root, '', $fileInfo->getPathname()), '/');
+            if ($this->hasDotComponent($rel)) {
+                continue;
+            }
+            $files[] = $rel;
+        }
+        sort($files);
+
+        return ['success' => true, 'files' => $files];
+    }
+
+    /**
+     * Resolves a caller-supplied relative path to an absolute path inside
+     * assets/, refusing anything that would escape it. Same logic as
+     * resolveSitePath/resolveMetadataPath, rooted at assets/ instead.
+     */
+    private function resolveAssetsPath(string $relativePath): ?string
+    {
+        return $this->resolveScopedPath($relativePath, 'assets');
+    }
+
+    /**
      * Shared implementation behind resolveMetadataPath and
      * resolveSitePath: resolves a caller-supplied relative path to an
      * absolute path inside repoPath/$subdir, refusing anything that would

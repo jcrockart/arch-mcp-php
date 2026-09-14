@@ -53,16 +53,20 @@ assuming push_allowed does anything live yet.
 
 --lanes takes a comma-separated list of lane[:subpath] pairs, e.g.
 "site" -> {"site": ""}, or "metadata:metadata,site:site,core" for all
-three. A "site" or "metadata" lane needs --write-extensions (e.g.
---write-extensions php,css,sql,md) -- there is no safe default allow-list
--- unless --read-only is given, which forces write_extensions to an
-explicit empty list ([]) instead: the lane's read/list tools stay
+three. A "site", "metadata", or "assets" lane needs --write-extensions
+(e.g. --write-extensions php,css,sql,md) -- there is no safe default
+allow-list -- unless --read-only is given, which forces write_extensions
+to an explicit empty list ([]) instead: the lane's read/list tools stay
 available, every write is refused regardless of extension. That's the
 supported way to grant read-only site-lane access (e.g. so something can
 browse/diff a production checkout without ever being able to write to
 it) -- omitting --write-extensions entirely means "no write lane
 declared for this profile at all," which is a different, more implicit
-thing than "explicitly read-only."
+thing than "explicitly read-only." (The "assets" lane -- AI-context
+bootstrap material, see claude/proposal-arch-mcp-assets-lane.md -- was
+added to this same-default-as-site/metadata rule 2026-09-13; it is not a
+new mechanism, just a third lane name subject to the identical
+no-safe-default reasoning.)
 
 ARCH-PROJECTS CONVENTION (2026-09-12): real ARCH-governed projects (as
 opposed to ARCH-COLLAB's own core-asset repos -- core, mcp, arch-portal,
@@ -389,8 +393,8 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
         # ArchTools.php. --read-only exists so that distinction is a
         # named flag instead of something you have to already know.
         write_extensions = []
-    elif any(lane in ("site", "metadata") for lane in lanes) and not write_extensions:
-        print("A site or metadata lane needs --write-extensions (e.g.")
+    elif any(lane in ("site", "metadata", "assets") for lane in lanes) and not write_extensions:
+        print("A site, metadata, or assets lane needs --write-extensions (e.g.")
         print("--write-extensions php,css,sql,md) — there's no safe default.")
         print("Or pass --read-only if this profile should never write at all.")
         return 1
@@ -473,8 +477,8 @@ def validate_entry_dict(label, entry):
     write_extensions = entry.get("write_extensions")
     if write_extensions is not None and not isinstance(write_extensions, list):
         return "{!r}: write_extensions must be a list (or omitted)".format(label)
-    if any(lane in ("site", "metadata") for lane in lanes) and write_extensions is None:
-        return ("{!r}: a site or metadata lane needs write_extensions -- pass "
+    if any(lane in ("site", "metadata", "assets") for lane in lanes) and write_extensions is None:
+        return ("{!r}: a site, metadata, or assets lane needs write_extensions -- pass "
                 "[] explicitly for read-only, there's no safe default").format(label)
 
     session_tools = entry.get("session_tools", False)
