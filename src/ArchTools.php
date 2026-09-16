@@ -88,6 +88,9 @@ final class ArchTools
      * editing any metadata.
      *
      * @param string $name optional session name; auto-generated (timestamp-based) if omitted
+     * @param string $lane optional lane name (default 'metadata'); must be one
+     * the caller's profile grants in arch-mcp-secrets/profiles.json, or the
+     * session refuses to start
      *
      * @return array<string, mixed> exit_code, stdout, stderr from arch.py
      */
