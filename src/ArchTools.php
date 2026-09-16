@@ -91,12 +91,17 @@ final class ArchTools
      *
      * @return array<string, mixed> exit_code, stdout, stderr from arch.py
      */
-    public function archSessionStart(string $name = ''): array
+    public function archSessionStart(string $name = '', string $lane = 'metadata'): array
     {
+        if (!isset($this->lanes[$lane])) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this token has no '{$lane}' lane"];
+        }
+
         $args = ['session', 'start'];
         if ('' !== $name) {
             $args[] = $name;
         }
+        $args[] = "--lane={$lane}";
 
         return $this->runArch($args);
     }
@@ -322,6 +327,236 @@ final class ArchTools
     private function resolveMetadataPath(string $relativePath): ?string
     {
         return $this->resolveScopedPath($relativePath, 'metadata');
+    }
+
+    /**
+     * Report the active session's lane, or '' if none is active.
+     * Mirrors arch.py's own default of 'metadata' for a session file
+     * with no explicit lane recorded.
+     */
+    private function activeSessionLane(): string
+    {
+        if (!is_file($this->sessionFile)) {
+            return '';
+        }
+        $session = json_decode((string) file_get_contents($this->sessionFile), true, flags: \JSON_THROW_ON_ERROR);
+
+        return $session['lane'] ?? 'metadata';
+    }
+
+    /**
+     * Added 2026-09-16 — exposes arch.py's `code` lane (built and proven
+     * on core and mcp, 2026-09-07, see claude/proposal-code-lane-gate-
+     * design.md) over MCP, so landing a real code-lane commit no longer
+     * requires driving a terminal by hand. Mirrors archSessionWriteFile's
+     * exact shape, with one extra check that doesn't exist anywhere else
+     * in this file: confirming the active session's lane actually IS
+     * 'code', not just that some session is active (see
+     * claude/proposal-arch-mcp-code-lane.md).
+     *
+     * @param string $path    relative path inside this token's code lane
+     *                        (see resolveCodePath — NOT a fixed
+     *                        subdirectory like metadata/site/assets)
+     * @param string $content full file content to write
+     *
+     * @return array<string, mixed>
+     */
+    public function archCodeWriteFile(string $path, string $content): array
+    {
+        if (!is_file($this->sessionFile)) {
+            return ['success' => false, 'error' => 'no active session — call arch_session_start with lane=code first'];
+        }
+        if ('code' !== $this->activeSessionLane()) {
+            return ['success' => false, 'error' => 'active session is not on the code lane'];
+        }
+        if (!$this->extensionAllowed($path)) {
+            return ['success' => false, 'error' => "file type not permitted for this token: '{$path}'"];
+        }
+
+        $resolved = $this->resolveCodePath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside this token's code lane"];
+        }
+
+        $dir = \dirname($resolved);
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return ['success' => false, 'error' => "could not create directory for '{$path}'"];
+        }
+
+        if (false === file_put_contents($resolved, $content)) {
+            return ['success' => false, 'error' => "failed to write '{$path}'"];
+        }
+
+        $this->logger->info('Code-lane file written.', ['path' => $path, 'bytes' => \strlen($content)]);
+
+        return ['success' => true, 'path' => $path, 'bytes' => \strlen($content)];
+    }
+
+    /**
+     * Added 2026-09-16 alongside archCodeWriteFile — see that method's
+     * docblock. Read works with no active session, same as
+     * archSessionReadFile/archSiteReadFile ("reading is safe either way;
+     * only writes require an active session").
+     *
+     * @param string $path relative path inside this token's code lane
+     *
+     * @return array<string, mixed>
+     */
+    public function archCodeReadFile(string $path): array
+    {
+        $resolved = $this->resolveCodePath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside this token's code lane"];
+        }
+
+        if (!is_file($resolved)) {
+            return ['success' => false, 'error' => "'{$path}' does not exist"];
+        }
+
+        $content = file_get_contents($resolved);
+        if (false === $content) {
+            return ['success' => false, 'error' => "failed to read '{$path}'"];
+        }
+
+        return ['success' => true, 'path' => $path, 'content' => $content];
+    }
+
+    /**
+     * Added 2026-09-16 alongside archCodeWriteFile — lists every file
+     * currently reachable through this token's code lane, i.e. every
+     * file under any of arch-gate.json's code.stage.paths entries (a
+     * flat subdirectory root like metadata/site/assets doesn't fit —
+     * see resolveCodePath).
+     *
+     * @return array<string, mixed>
+     */
+    public function archCodeListFiles(): array
+    {
+        if (!isset($this->lanes['code'])) {
+            return ['success' => true, 'files' => []];
+        }
+
+        $gatePath = $this->repoPath.'/arch-gate.json';
+        if (!is_file($gatePath)) {
+            return ['success' => true, 'files' => []];
+        }
+        $gateConfig = json_decode((string) file_get_contents($gatePath), true);
+        $stagePaths = $gateConfig['code']['stage']['paths'] ?? [];
+        if (!\is_array($stagePaths)) {
+            return ['success' => true, 'files' => []];
+        }
+
+        $files = [];
+        foreach ($stagePaths as $stagePath) {
+            if (!\is_string($stagePath)) {
+                continue;
+            }
+            $trimmed = trim($stagePath, '/');
+            $abs = $this->repoPath.'/'.$trimmed;
+            if (is_file($abs)) {
+                $files[] = $trimmed;
+                continue;
+            }
+            if (!is_dir($abs)) {
+                continue;
+            }
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($abs, \FilesystemIterator::SKIP_DOTS)
+            );
+            foreach ($iterator as $fileInfo) {
+                if (!$fileInfo->isFile()) {
+                    continue;
+                }
+                $rel = ltrim(str_replace($this->repoPath, '', $fileInfo->getPathname()), '/');
+                if ($this->hasDotComponent($rel)) {
+                    continue;
+                }
+                $files[] = $rel;
+            }
+        }
+        sort($files);
+
+        return ['success' => true, 'files' => $files];
+    }
+
+    /**
+     * Resolves a caller-supplied relative path to an absolute path inside
+     * this token's code lane, refusing anything that would escape it.
+     *
+     * Unlike resolveScopedPath (metadata/site/assets), a code lane has no
+     * single subdirectory root — core's own stage paths are
+     * ["arch.py", "validate.py", "arch-gate.json"] (repo-root files, no
+     * shared parent) and mcp's are four top-level entries. So this reads
+     * the SAME arch-gate.json that already governs what a real commit
+     * stages — fresh, no caching, matching how tokens.json/profiles.json
+     * are already read on every request — and accepts a path only if it
+     * falls under one of those entries. The MCP write-scope and the
+     * actual commit-time staging scope are therefore structurally the
+     * same list, read from the same file: there is no separate copy of
+     * "what's in scope" to let drift out of sync with what a session
+     * commit will actually stage. See claude/proposal-arch-mcp-code-
+     * lane.md §3.
+     */
+    private function resolveCodePath(string $relativePath): ?string
+    {
+        if ('' === $relativePath || str_contains($relativePath, "\0")) {
+            return null;
+        }
+        if ($this->hasDotComponent($relativePath)) {
+            return null;
+        }
+        if (!isset($this->lanes['code'])) {
+            return null;
+        }
+
+        $gatePath = $this->repoPath.'/arch-gate.json';
+        if (!is_file($gatePath)) {
+            return null;
+        }
+        $gateConfig = json_decode((string) file_get_contents($gatePath), true);
+        $stagePaths = $gateConfig['code']['stage']['paths'] ?? null;
+        if (!\is_array($stagePaths)) {
+            return null;
+        }
+
+        $normalized = ltrim($relativePath, '/');
+        $allowed = false;
+        foreach ($stagePaths as $stagePath) {
+            if (!\is_string($stagePath)) {
+                continue;
+            }
+            $stagePath = trim($stagePath, '/');
+            if ($normalized === $stagePath || str_starts_with($normalized, $stagePath.'/')) {
+                $allowed = true;
+                break;
+            }
+        }
+        if (!$allowed) {
+            return null;
+        }
+
+        $candidate = $this->repoPath.'/'.$normalized;
+
+        $dir = \dirname($candidate);
+        $existingAncestor = $dir;
+        while (!is_dir($existingAncestor)) {
+            $parent = \dirname($existingAncestor);
+            if ($parent === $existingAncestor) {
+                return null;
+            }
+            $existingAncestor = $parent;
+        }
+
+        $realAncestor = realpath($existingAncestor);
+        $realRoot = realpath($this->repoPath) ?: $this->repoPath;
+        if (false === $realAncestor) {
+            return null;
+        }
+        if ($realAncestor !== $realRoot && !str_starts_with($realAncestor, $realRoot.'/')) {
+            return null;
+        }
+
+        return $candidate;
     }
 
     /**
