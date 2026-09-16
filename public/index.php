@@ -198,6 +198,22 @@ if (isset($profile['lanes']['site'])) {
         ->addTool([ArchTools::class, 'archSiteListFiles'], 'arch_site_list_files');
 }
 
+// Added 2026-09-16 — exposes arch.py's `code` lane over MCP (built and
+// proven directly against core/mcp 2026-09-07; this is what lets it be
+// driven from here instead of a terminal). Session-gated like metadata,
+// not ungoverned like site: archCodeWriteFile itself checks both that a
+// session is active AND that its lane is 'code' (see ArchTools.php). A
+// profile without a 'code' lane doesn't even see these tools exist,
+// same "advertised list is a filter, runtime check is the real control"
+// principle as every other block here. See claude/proposal-arch-mcp-
+// code-lane.md.
+if (isset($profile['lanes']['code'])) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archCodeWriteFile'], 'arch_code_write_file')
+        ->addTool([ArchTools::class, 'archCodeReadFile'], 'arch_code_read_file')
+        ->addTool([ArchTools::class, 'archCodeListFiles'], 'arch_code_list_files');
+}
+
 // Added for the AI-context "assets" lane — see
 // claude/proposal-arch-mcp-assets-lane.md. Same pattern as the site-lane
 // block above: a profile without an 'assets' lane doesn't even see
