@@ -186,6 +186,29 @@ if (isset($profile['lanes']['core']) && ($profile['push_allowed'] ?? false)) {
         ->addTool([ArchTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push');
 }
 
+// Added 2026-09-17 -- schema/data migration tooling (see claude/note-
+// 2026-09-17-db-migration-gap-and-proposal.md for the incident and
+// design). Read-only "pending migrations" is unconditional for any
+// core-lane profile, same as status/diff/log/show/fetch above -- it
+// only reads the target project's own migration files and its own
+// schema_migrations table, never writes anything.
+if (isset($profile['lanes']['core'])) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations');
+}
+
+// The write-capable counterpart -- same opt-in-per-profile pattern as
+// pull_allowed/push_allowed above, via a new db_apply_allowed flag (set
+// in profiles.json, never by the live MCP request). A profile without
+// the flag doesn't even see this tool exists; the runtime check lives
+// in ArchTools::archCoreDbApplyMigrations() itself ($this->dbApplyAllowed),
+// so this is belt-and-suspenders, not the only enforcement -- same
+// two-layer principle as every other gated tool in this file.
+if (isset($profile['lanes']['core']) && ($profile['db_apply_allowed'] ?? false)) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations');
+}
+
 // Added 2026-08-31, deployed with James live at the terminal after an
 // overnight draft-and-test cycle (not shipped unattended — see Codegen
 // CLI Design §8 for why). Deliberately separate name prefix

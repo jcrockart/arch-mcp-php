@@ -56,6 +56,18 @@ final class ArchTools
     private string $pushBranch;
 
     /**
+     * Whether this profile may run archCoreDbApplyMigrations(). Off by
+     * default -- same opt-in pattern as pullAllowed/pushAllowed. Added
+     * 2026-09-17 alongside the migration tooling itself; without this
+     * check, any profile with a core lane could apply policy-eligible
+     * migrations to its project's live database, with no per-project
+     * opt-in at all. archCoreDbPendingMigrations() (read-only) is NOT
+     * gated by this -- it carries no more risk than the other unconditional
+     * core-lane read tools (status/diff/log/show/fetch).
+     */
+    private bool $dbApplyAllowed;
+
+    /**
      * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
      *        Resolved token profile (ArchProfiles::resolve). Null is
      *        accepted only so existing unit tests that construct this
@@ -75,6 +87,7 @@ final class ArchTools
         $this->pullBranch = $profile['pull_branch'] ?? 'main';
         $this->pushAllowed = $profile['push_allowed'] ?? false;
         $this->pushBranch = $profile['push_branch'] ?? 'main';
+        $this->dbApplyAllowed = $profile['db_apply_allowed'] ?? false;
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -1327,5 +1340,344 @@ final class ArchTools
         ]);
 
         return $push;
+    }
+
+    /**
+     * Added 2026-09-17 -- schema/data migration tooling, extending this
+     * server's git-pull-style "safe by construction" gating to database
+     * schema changes. See claude/note-2026-09-17-db-migration-gap-and-
+     * proposal.md for the incident and design that motivated this.
+     *
+     * Read-only: compares the migration files declared under this
+     * profile's core-lane root (db/migrations/*.sql) against the
+     * schema_migrations table in that project's OWN database (read via
+     * its own config.php -- this tool never receives or stores a
+     * database credential itself; it reads whatever the target project
+     * already keeps for its own use, the same trust boundary
+     * archCoreGitPullFastForward draws around this host's git
+     * credential).
+     *
+     * @return array<string, mixed>
+     */
+    public function archCoreDbPendingMigrations(): array
+    {
+        $root = $this->laneRoot('core');
+        if (null === $root) {
+            return ['success' => false, 'error' => 'this token has no core lane'];
+        }
+
+        $declared = $this->listDeclaredMigrations($root);
+
+        $pdo = $this->connectProjectDb($root);
+        if (!$pdo instanceof \PDO) {
+            return ['success' => false, 'error' => "could not connect to this project's own database (no config.php / DB_* constants found)"];
+        }
+
+        $applied = [];
+        try {
+            $stmt = $pdo->query('SELECT id FROM schema_migrations');
+            $applied = $stmt ? $stmt->fetchAll(\PDO::FETCH_COLUMN) : [];
+        } catch (\PDOException $e) {
+            // schema_migrations doesn't exist yet -- every declared migration is pending until
+            // the one-time bootstrap (db/schema_migrations_bootstrap.sql) has been run by hand.
+            $applied = [];
+        }
+
+        $pending = [];
+        foreach ($declared as $migration) {
+            if (!\in_array($migration['id'], $applied, true)) {
+                $pending[] = $migration;
+            }
+        }
+
+        return [
+            'success' => true,
+            'pending' => $pending,
+            'applied_count' => \count($applied),
+            'declared_count' => \count($declared),
+        ];
+    }
+
+    /**
+     * Gated apply. Refuses anything outside what this project's own
+     * db-policy.json currently lists as auto-apply-eligible for that
+     * migration's declared tier -- same "policy is data, not code" shape
+     * as this class's other gates (pull_allowed/pull_branch,
+     * push_allowed/push_branch all come from the profile, never from a
+     * caller argument). schema-destructive is never eligible, full stop,
+     * regardless of policy content -- see db/migrations/README.md.
+     *
+     * Applies every currently-pending, policy-eligible migration in
+     * declared order, each in its own transaction (commits and records
+     * itself before the next runs), so a failure partway through leaves
+     * earlier migrations applied and recorded -- matching how they'd
+     * have landed if run by hand one at a time. Anything not eligible is
+     * reported, not applied, and still requires a human via phpMyAdmin,
+     * same as today.
+     *
+     * Takes no caller-supplied arguments -- same shape as
+     * archCoreGitPullFastForward()/archCoreGitPushOrigin(): the only
+     * variable is which profile is calling and what that project's own
+     * declared migrations + policy file say, never a request parameter.
+     *
+     * @return array<string, mixed>
+     */
+    public function archCoreDbApplyMigrations(): array
+    {
+        if (!$this->dbApplyAllowed) {
+            return ['success' => false, 'error' => 'this token is not permitted to apply DB migrations'];
+        }
+
+        $root = $this->laneRoot('core');
+        if (null === $root) {
+            return ['success' => false, 'error' => 'this token has no core lane'];
+        }
+
+        $pendingResult = $this->archCoreDbPendingMigrations();
+        if (!($pendingResult['success'] ?? false)) {
+            return $pendingResult;
+        }
+
+        $policy = $this->readDbPolicy($root);
+        $autoTiers = $policy['auto_apply_tiers'] ?? [];
+
+        $pdo = $this->connectProjectDb($root);
+        if (!$pdo instanceof \PDO) {
+            return ['success' => false, 'error' => "could not connect to this project's own database"];
+        }
+
+        $applied = [];
+        $skipped = [];
+        foreach ($pendingResult['pending'] as $migration) {
+            $type = $migration['type'] ?? '';
+            $dataClass = $migration['data-class'] ?? null;
+            $eligible = 'schema-destructive' !== $type && \in_array($type, $autoTiers, true);
+
+            // Transactional data is never auto-apply-eligible, regardless of
+            // what db-policy.json says -- same "hardcoded, not policy-driven"
+            // treatment as schema-destructive above. Per the design
+            // conversation (2026-09-17): reference/configuration data may be
+            // safe to seed automatically under policy, but transactional
+            // (and audit) data is categorically out of scope for this tool.
+            if ($eligible && 'transactional' === $dataClass) {
+                $eligible = false;
+                $migration['refused_reason'] = "data-class 'transactional' is never auto-apply-eligible -- needs human review, regardless of policy";
+            }
+
+            // Declared-tag-doesn't-match-body guard -- a refusal check only,
+            // never a grant. A schema-additive file containing an obvious
+            // destructive statement is refused even if the tier is policy-
+            // allowed; nothing here can turn a non-eligible tier eligible.
+            if ($eligible && $this->looksDestructive($migration['sql'])) {
+                $eligible = false;
+                $migration['refused_reason'] = "declared as {$type} but SQL body looks destructive -- refusing, needs human review";
+            }
+
+            if (!$eligible) {
+                $migration['refused_reason'] ??= "tier '{$type}' not in this project's db-policy.json auto_apply_tiers";
+                $skipped[] = $migration;
+                continue;
+            }
+
+            try {
+                $pdo->beginTransaction();
+                $pdo->exec($migration['sql']);
+                $stmt = $pdo->prepare(
+                    'INSERT INTO schema_migrations (id, type, data_class, description, applied_at, applied_by)
+                     VALUES (?, ?, ?, ?, NOW(), ?)'
+                );
+                $stmt->execute([
+                    $migration['id'],
+                    $type,
+                    $migration['data-class'] ?? null,
+                    $migration['description'] ?? null,
+                    'agent:archCoreDbApplyMigrations',
+                ]);
+                $pdo->commit();
+                $applied[] = $migration['id'];
+                $this->logger->info('DB migration applied (gated).', ['id' => $migration['id'], 'type' => $type]);
+            } catch (\PDOException $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+
+                return [
+                    'success' => false,
+                    'error' => "migration '{$migration['id']}' failed: ".$e->getMessage(),
+                    'applied_before_failure' => $applied,
+                ];
+            }
+        }
+
+        $this->logger->info('DB migration batch complete (gated).', [
+            'applied' => $applied,
+            'skipped_count' => \count($skipped),
+        ]);
+
+        return ['success' => true, 'applied' => $applied, 'skipped' => $skipped];
+    }
+
+    /**
+     * A refusal check only -- see archCoreDbApplyMigrations(). Never
+     * used to grant anything; a false negative here just means the
+     * policy/tier check is the only thing standing between a migration
+     * and auto-apply, same as before this guard existed.
+     */
+    private function looksDestructive(string $sql): bool
+    {
+        return 1 === preg_match(
+            '/\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE|DELETE\s+FROM|RENAME\s+(TABLE|COLUMN))\b/i',
+            $sql
+        );
+    }
+
+    /**
+     * Reads and parses every db/migrations/*.sql file under this
+     * profile's core lane root, in filename order (files are numbered
+     * NNNN_ prefix precisely so this ordering is stable and explicit --
+     * see db/migrations/README.md).
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function listDeclaredMigrations(string $root): array
+    {
+        $dir = $root.'/db/migrations';
+        if (!is_dir($dir)) {
+            return [];
+        }
+        $files = glob($dir.'/*.sql') ?: [];
+        sort($files);
+
+        $migrations = [];
+        foreach ($files as $file) {
+            $content = file_get_contents($file);
+            if (false === $content) {
+                continue;
+            }
+            $parsed = $this->parseMigrationFile($content);
+            if (null !== $parsed) {
+                $migrations[] = $parsed;
+            }
+        }
+
+        return $migrations;
+    }
+
+    /**
+     * Parses a migration file's `-- key: value` header block (id, type,
+     * data-class, description) plus its SQL body. Returns null for a
+     * file with no valid `-- id:`/`-- type:` header -- such a file is
+     * silently skipped by listDeclaredMigrations() rather than treated
+     * as a migration with no identity, since there is nothing safe to do
+     * with an unidentified SQL blob.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function parseMigrationFile(string $content): ?array
+    {
+        $id = null;
+        $type = null;
+        $dataClass = null;
+        $descriptionParts = [];
+        $sqlLines = [];
+        $inHeader = true;
+
+        foreach (explode("\n", $content) as $line) {
+            if ($inHeader) {
+                if (1 === preg_match('/^--\s*id:\s*(.+)$/', $line, $m)) {
+                    $id = trim($m[1]);
+                    continue;
+                }
+                if (1 === preg_match('/^--\s*type:\s*(.+)$/', $line, $m)) {
+                    $type = trim($m[1]);
+                    continue;
+                }
+                if (1 === preg_match('/^--\s*data-class:\s*(.+)$/', $line, $m)) {
+                    $dataClass = trim($m[1]);
+                    continue;
+                }
+                if (1 === preg_match('/^--\s*description:\s*(.+)$/', $line, $m)) {
+                    $descriptionParts[] = trim($m[1]);
+                    continue;
+                }
+                // Indented continuation of the description field (this
+                // project's existing header-comment convention -- see
+                // db/migrations/0001 onward).
+                if (!empty($descriptionParts) && 1 === preg_match('/^--\s{2,}(.+)$/', $line, $m)) {
+                    $descriptionParts[] = trim($m[1]);
+                    continue;
+                }
+                if ('' === trim($line) || 1 === preg_match('/^--/', $line)) {
+                    continue;
+                }
+                $inHeader = false;
+            }
+            $sqlLines[] = $line;
+        }
+
+        if (null === $id || null === $type) {
+            return null;
+        }
+
+        return [
+            'id' => $id,
+            'type' => $type,
+            'data-class' => $dataClass,
+            'description' => implode(' ', $descriptionParts),
+            'sql' => trim(implode("\n", $sqlLines)),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function readDbPolicy(string $root): array
+    {
+        $path = $root.'/db/db-policy.json';
+        if (!is_file($path)) {
+            return ['auto_apply_tiers' => []];
+        }
+        $decoded = json_decode((string) file_get_contents($path), true);
+
+        return \is_array($decoded) ? $decoded : ['auto_apply_tiers' => []];
+    }
+
+    /**
+     * Connects to the TARGET PROJECT's own database, using ITS OWN
+     * config.php -- never a credential this server holds itself. Same
+     * trust boundary as this file's git methods: this tool has no
+     * agent-readable database credential of its own, it only reads
+     * whatever the project being operated on already keeps for its own
+     * use (config.php, out of git, same convention every project here
+     * already uses for its own web requests -- see e.g. arch-portal's
+     * src/db.php, which this mirrors rather than calls directly, since
+     * not every project in this ecosystem necessarily structures its own
+     * db.php the same way).
+     */
+    private function connectProjectDb(string $root): ?\PDO
+    {
+        $configPath = $root.'/config.php';
+        if (!is_file($configPath)) {
+            return null;
+        }
+        if (!\defined('DB_HOST')) {
+            require_once $configPath;
+        }
+        if (!\defined('DB_HOST') || !\defined('DB_NAME') || !\defined('DB_USER') || !\defined('DB_PASS')) {
+            return null;
+        }
+
+        try {
+            return new \PDO(
+                \sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', \DB_HOST, \DB_NAME),
+                \DB_USER,
+                \DB_PASS,
+                [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]
+            );
+        } catch (\PDOException $e) {
+            $this->logger->error('DB connection failed for migration tooling.', ['error' => $e->getMessage()]);
+
+            return null;
+        }
     }
 }
