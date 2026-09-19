@@ -1484,7 +1484,7 @@ final class ArchTools
                 $pdo->exec($migration['sql']);
                 $stmt = $pdo->prepare(
                     'INSERT INTO schema_migrations (id, type, data_class, description, applied_at, applied_by)
-                     VALUES (?, ?, ?, ?, NOW(), ?)'
+                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)'
                 );
                 $stmt->execute([
                     $migration['id'],
@@ -1653,6 +1653,19 @@ final class ArchTools
      * src/db.php, which this mirrors rather than calls directly, since
      * not every project in this ecosystem necessarily structures its own
      * db.php the same way).
+     *
+     * Added 2026-09-19 -- multi-database support (see
+     * claude/proposal-multi-database-support.md in the ARCH-COLLAB Claude
+     * Project). A project's own config.php may now declare
+     * `DB_ENGINE` ('mysql', the implicit default if unset, or 'sqlite').
+     * A 'sqlite' project defines `DB_PATH` (an absolute path to its
+     * SQLite file) instead of DB_HOST/DB_NAME/DB_USER/DB_PASS -- no
+     * profiles.json change needed, since this method already only ever
+     * reads the TARGET PROJECT's own config, never this server's own
+     * secrets. The "already loaded" guard below checks both DB_ENGINE
+     * and DB_HOST (whichever a given project's config.php actually
+     * defines) so config.php is never require_once'd twice in one
+     * process regardless of which engine flavour it is.
      */
     private function connectProjectDb(string $root): ?\PDO
     {
@@ -1660,9 +1673,31 @@ final class ArchTools
         if (!is_file($configPath)) {
             return null;
         }
-        if (!\defined('DB_HOST')) {
+        if (!\defined('DB_ENGINE') && !\defined('DB_HOST')) {
             require_once $configPath;
         }
+
+        $engine = \defined('DB_ENGINE') ? \DB_ENGINE : 'mysql';
+
+        if ('sqlite' === $engine) {
+            if (!\defined('DB_PATH')) {
+                return null;
+            }
+
+            try {
+                return new \PDO(
+                    \sprintf('sqlite:%s', \DB_PATH),
+                    null,
+                    null,
+                    [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]
+                );
+            } catch (\PDOException $e) {
+                $this->logger->error('DB connection failed for migration tooling.', ['error' => $e->getMessage(), 'engine' => 'sqlite']);
+
+                return null;
+            }
+        }
+
         if (!\defined('DB_HOST') || !\defined('DB_NAME') || !\defined('DB_USER') || !\defined('DB_PASS')) {
             return null;
         }
@@ -1675,7 +1710,7 @@ final class ArchTools
                 [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]
             );
         } catch (\PDOException $e) {
-            $this->logger->error('DB connection failed for migration tooling.', ['error' => $e->getMessage()]);
+            $this->logger->error('DB connection failed for migration tooling.', ['error' => $e->getMessage(), 'engine' => 'mysql']);
 
             return null;
         }
