@@ -8,22 +8,31 @@
  * to arch.py exactly as a human would from the command line, and returns
  * its stdout/exit code. No git logic is duplicated here.
  *
- * DESIGN NOTE (Codegen CLI Design §7.3): this server's repo is a durable
- * local clone (git-backed, on this host's persistent disk, cloned from
- * the shared remote) — NOT an ephemeral agent sandbox. Per §7.3's
- * published resolution, that means arch_session_commit's local merge is
- * already durable on its own; pushing to the shared remote deliberately
- * stays a separate, human-paced action (mirroring the precedent Git
- * Setup & Access Policy §10 sets for deployment triggers), not something
- * this tool set performs automatically. If that's ever revisited, it
- * must not be added casually — see §9 item 3's credential-isolation
- * rationale first.
- *
- * This server holds no agent-readable git credential: it doesn't need
- * one for anything in this file. If a human later configures this host
- * to also push, that credential lives in this host's own environment
- * (e.g. its own deploy key), never passed through or exposed by any
- * tool call here.
+ * DESIGN NOTE (Codegen CLI Design §7.3, REVISITED 2026-09-19): this
+ * server's repo is a durable local clone (git-backed, on this host's
+ * persistent disk, cloned from the shared remote) — NOT an ephemeral
+ * agent sandbox. §7.3 originally kept pushing to the shared remote out
+ * of arch_session_commit deliberately, citing §9 item 3's credential-
+ * isolation rationale ("this server holds no agent-readable git
+ * credential"). That premise no longer held even before today: since
+ * archCoreGitPushOrigin() was added (Codegen CLI Design §8, gated by
+ * per-profile push_allowed/push_branch), this server has run a fully
+ * credentialed, agent-reachable `git push origin` for every profile
+ * with push access — the credential-isolation boundary now lives at
+ * the profile/token level (push_allowed opt-in, one push_branch,
+ * fast-forward-only, no --force), not at "this file never pushes."
+ * See claude/note-2026-09-19-push-on-commit.md for the full decision
+ * record. Given that, arch_session_commit() now folds in the exact
+ * same push (same branch, same credential, same fast-forward-only git
+ * default) immediately after a successful local commit, for any
+ * profile with push_allowed — see its docblock below. No new
+ * credential surface is introduced by this; it wires an already-
+ * built, already-gated, already-tested tool into the commit flow
+ * instead of leaving it as a second manual step. Git Setup & Access
+ * Policy §10's human-paced-deployment precedent still governs actual
+ * promotion to production (a separate, review-gated pull performed by
+ * a human via the ARCH-COLLAB Portal), which this change does not
+ * touch.
  */
 
 namespace ArchMcp;
@@ -146,13 +155,31 @@ final class ArchTools
      * aborted, branch left open and unchanged, main untouched — fix the
      * errors and call this again, or call arch_session_discard.
      *
-     * Merges to this host's own local `main` only — see this file's
-     * header note on why pushing to a shared remote is deliberately not
-     * part of this tool (Codegen CLI Design §7.3).
+     * Always merges to this host's own local `main` first, exactly as
+     * before. REVISITED 2026-09-19 (see this file's header note and
+     * claude/note-2026-09-19-push-on-commit.md): if the resolved profile
+     * has push_allowed, a successful local commit is now immediately
+     * followed by the same push archCoreGitPushOrigin() performs — a
+     * plain `git push origin <push_branch>`, fast-forward-only by git's
+     * own default, never --force. This reuses that method's exact git
+     * invocation and credential rather than adding a new one.
+     *
+     * The commit above is the durable, safety-gated step (full
+     * validation, atomic merge); the push is comparatively low-risk
+     * (fast-forward-only, single fixed branch) and is never allowed to
+     * retroactively fail the commit. So: a push failure (no push_allowed,
+     * network error, non-fast-forward, no remote configured, etc.) is
+     * reported back in the 'push' key alongside the normal commit result
+     * fields, and never changes exit_code or otherwise makes an
+     * already-successful local commit look like it failed. Callers that
+     * care whether the push landed should check the 'push' key
+     * ('pushed' => true/false) rather than exit_code alone. A profile
+     * with push_allowed = false (the default) gets no 'push' key at all
+     * — behaviour is identical to before this change.
      *
      * @param string $bump one of "major", "minor", "patch" (default "patch"), per 22.5 Semantic Versioning Policy
      *
-     * @return array<string, mixed> exit_code, stdout, stderr from arch.py
+     * @return array<string, mixed> exit_code, stdout, stderr from arch.py, plus an optional 'push' key (see above)
      */
     public function archSessionCommit(string $bump = 'patch'): array
     {
@@ -160,7 +187,43 @@ final class ArchTools
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "invalid bump '{$bump}'"];
         }
 
-        return $this->runArch(['session', 'commit', "--{$bump}"]);
+        $result = $this->runArch(['session', 'commit', "--{$bump}"]);
+
+        if (0 !== $result['exit_code'] || !$this->pushAllowed) {
+            return $result;
+        }
+
+        // Commit is already durable locally at this point regardless of
+        // what follows — nothing below may change $result['exit_code'].
+        $headResult = $this->execGit(['rev-parse', 'HEAD'], $this->repoPath);
+        if (0 !== $headResult['exit_code']) {
+            $result['push'] = [
+                'pushed' => false,
+                'branch' => $this->pushBranch,
+                'stderr' => 'commit succeeded but could not resolve new HEAD to push: '.$headResult['stderr'],
+            ];
+
+            return $result;
+        }
+        $head = trim($headResult['stdout']);
+
+        $push = $this->execGit(['push', 'origin', $this->pushBranch], $this->repoPath);
+        $result['push'] = [
+            'pushed' => 0 === $push['exit_code'],
+            'branch' => $this->pushBranch,
+            'head' => $head,
+            'exit_code' => $push['exit_code'],
+            'stdout' => $push['stdout'],
+            'stderr' => $push['stderr'],
+        ];
+
+        $this->logger->info('git push (session commit, auto).', [
+            'branch' => $this->pushBranch,
+            'head' => $head,
+            'exit_code' => $push['exit_code'],
+        ]);
+
+        return $result;
     }
 
     /**
