@@ -890,24 +890,6 @@ final class ArchTools
     }
 
     /**
-     * Shared implementation behind resolveMetadataPath, resolveSitePath,
-     * and resolveAssetsPath: resolves a caller-supplied relative path to
-     * an absolute path inside repoPath/$subdir, refusing anything that
-     * would escape it (../, symlink tricks, absolute paths, null bytes).
-     * Returns null on any violation. This is an allowlist of named
-     * directories (metadata/, site/, assets/), not a blocklist of the
-     * repo root — arch.py, validate.py, and .git remain unreachable by
-     * construction regardless of how many scoped lanes get added here in
-     * future. (Doc comment corrected 2026-09-19 — resolveAssetsPath was
-     * added 2026-09-13 without this comment being updated to match.)
-     */
-    /**
-     * Absolute filesystem root for a lane this token was granted, or null.
-     * Single source of truth for "where does this lane live" — every
-     * caller must go through here, including the list methods, which
-     * previously derived it themselves and got it wrong.
-     */
-    /**
      * Extension allowlist for writes.
      *
      * A site lane points at a directory Apache serves with PHP enabled.
@@ -928,6 +910,12 @@ final class ArchTools
         return '' !== $ext && \in_array($ext, $this->writeExtensions, true);
     }
 
+    /**
+     * Absolute filesystem root for a lane this token was granted, or null.
+     * Single source of truth for "where does this lane live" — every
+     * caller must go through here, including the list methods, which
+     * previously derived it themselves and got it wrong.
+     */
     private function laneRoot(string $lane): ?string
     {
         if (!isset($this->lanes[$lane])) {
@@ -963,6 +951,20 @@ final class ArchTools
         return false;
     }
 
+    /**
+     * Shared implementation behind resolveMetadataPath, resolveSitePath,
+     * and resolveAssetsPath: resolves a caller-supplied relative path to
+     * an absolute path inside repoPath/$subdir, refusing anything that
+     * would escape it (../, symlink tricks, absolute paths, null bytes).
+     * Returns null on any violation. This is an allowlist of named
+     * directories (metadata/, site/, assets/), not a blocklist of the
+     * repo root — arch.py, validate.py, and .git remain unreachable by
+     * construction regardless of how many scoped lanes get added here in
+     * future. (Doc comment corrected 2026-09-19 — resolveAssetsPath was
+     * added 2026-09-13 without this comment being updated to match. Then
+     * misplaced entirely during that same fix, landing above
+     * extensionAllowed() instead of here — corrected again same day.)
+     */
     private function resolveScopedPath(string $relativePath, string $lane): ?string
     {
         if ('' === $relativePath || str_contains($relativePath, "\0")) {
@@ -1314,6 +1316,15 @@ final class ArchTools
      * The other write-capable git operation this server can expose: push
      * this profile's checkout to origin/<push_branch>. Deliberately the
      * most restricted method in this file.
+     *
+     * Since 2026-09-19, a push_allowed profile no longer needs to call
+     * this directly for the common case -- archSessionCommit() now runs
+     * this exact push automatically right after a successful commit (see
+     * its own docblock and claude/note-2026-09-19-push-on-commit.md).
+     * This method still exists standalone for a manual push against an
+     * already-committed HEAD (e.g. retrying a push that failed for a
+     * reason unrelated to the commit, such as a transient network error)
+     * without re-running session commit.
      *
      * Preconditions, all enforced before any git process spawns:
      *  - Refused outright unless this profile was provisioned with
