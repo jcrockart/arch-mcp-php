@@ -33,6 +33,17 @@
  * promotion to production (a separate, review-gated pull performed by
  * a human via the ARCH-COLLAB Portal), which this change does not
  * touch.
+ *
+ * DEPLOYMENT NOTE (2026-09-19): landing this feature itself required a
+ * one-time manual bootstrap. mcp.crockart.com.au serves this class from
+ * arch-mcp-prod's own checkout (/home/crockart/arch-collab/mcp), not
+ * this staging checkout -- so archSessionCommit()'s new push-on-commit
+ * step could not push itself into production: the live server was still
+ * running the pre-push version of this method, which had no push logic
+ * to reach origin with in the first place. James pushed this staging
+ * branch to origin and merged it into the prod checkout by hand, once,
+ * from a terminal. Every push-on-commit call after that bootstrap is the
+ * normal, fully agent-driven path this docblock describes.
  */
 
 namespace ArchMcp;
