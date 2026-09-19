@@ -890,14 +890,16 @@ final class ArchTools
     }
 
     /**
-     * Shared implementation behind resolveMetadataPath and
-     * resolveSitePath: resolves a caller-supplied relative path to an
-     * absolute path inside repoPath/$subdir, refusing anything that would
-     * escape it (../, symlink tricks, absolute paths, null bytes).
+     * Shared implementation behind resolveMetadataPath, resolveSitePath,
+     * and resolveAssetsPath: resolves a caller-supplied relative path to
+     * an absolute path inside repoPath/$subdir, refusing anything that
+     * would escape it (../, symlink tricks, absolute paths, null bytes).
      * Returns null on any violation. This is an allowlist of named
-     * directories (metadata/, site/), not a blocklist of the repo root —
-     * arch.py, validate.py, and .git remain unreachable by construction
-     * regardless of how many scoped lanes get added here in future.
+     * directories (metadata/, site/, assets/), not a blocklist of the
+     * repo root — arch.py, validate.py, and .git remain unreachable by
+     * construction regardless of how many scoped lanes get added here in
+     * future. (Doc comment corrected 2026-09-19 — resolveAssetsPath was
+     * added 2026-09-13 without this comment being updated to match.)
      */
     /**
      * Absolute filesystem root for a lane this token was granted, or null.
