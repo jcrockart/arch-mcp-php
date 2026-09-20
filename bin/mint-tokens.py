@@ -12,6 +12,7 @@ one yet.
                             [--session-tools] [--read-only]
                             [--allow-pull [--pull-branch BRANCH]]
                             [--allow-push [--push-branch BRANCH]]
+                            [--allow-db-apply]
                                             # declare a brand-new profile in
                                             # profiles.json and mint its
                                             # token in one step
@@ -20,6 +21,7 @@ one yet.
                             [--session-tools] [--read-only]
                             [--allow-pull [--pull-branch BRANCH]]
                             [--allow-push [--push-branch BRANCH]]
+                            [--allow-db-apply]
                                             # same, but computes ROOT and
                                             # LABEL from SLUG+ENV per the
                                             # arch-projects convention
@@ -46,6 +48,19 @@ not create one. Same silently-dropped-until-the-PHP-side-ships caveat
 applied to pull_allowed/pull_branch before that shipped -- if this
 document is out of date, check the proposal doc's own status line before
 assuming push_allowed does anything live yet.
+
+--allow-db-apply sets db_apply_allowed: true on the entry (needs a core
+lane), letting this profile call the gated arch_core_db_apply_migrations
+tool -- applies only migrations already declared under the project's own
+migrations directory, strictly in order, refusing outright on the first
+failure; no caller-supplied SQL, no arbitrary statements. FIX 2026-09-21:
+this flag, the validate_entry_dict() checks below, and the matching CLI
+plumbing were all missing until now -- an --apply-state call setting
+db_apply_allowed on an entry was rejected with an "unexpected field(s):
+db_apply_allowed" error, even though ArchProfiles.php/ArchTools.php
+already understood the field on the profiles.json side. See
+claude/note-2026-09-21-db-apply-lane-followups.md for the incident this
+closes.
     python3 mint-tokens.py --apply-state PATH [--force-prune]
                                             # reconcile every Portal-managed
                                             # label to match a full desired
@@ -407,6 +422,8 @@ def format_entry(label, entry):
         fields.append('{}  "push_allowed": true'.format(indent))
     if "push_branch" in entry:
         fields.append('{}  "push_branch": "{}"'.format(indent, entry["push_branch"]))
+    if entry.get("db_apply_allowed"):
+        fields.append('{}  "db_apply_allowed": true'.format(indent))
     body = ",\n".join(fields)
     return '{}"{}": {{\n{}\n{}}}'.format(indent, label, body, indent)
 
@@ -425,7 +442,8 @@ def project_root_and_label(slug, env):
 
 
 def provision(label, root, lanes, session_tools, write_extensions, read_only=False,
-              allow_pull=False, pull_branch=None, allow_push=False, push_branch=None):
+              allow_pull=False, pull_branch=None, allow_push=False, push_branch=None,
+              allow_db_apply=False):
     with open(PROFILES) as fh:
         raw = fh.read()
     profiles = json.loads(raw)
@@ -448,6 +466,11 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
     if allow_push and "core" not in lanes:
         print("--allow-push needs a core lane (e.g. --lanes core:,site:) --")
         print("the push mechanism runs against the core lane's checkout.")
+        return 1
+
+    if allow_db_apply and "core" not in lanes:
+        print("--allow-db-apply needs a core lane (e.g. --lanes core:,site:) --")
+        print("the db-apply mechanism runs against the core lane's checkout.")
         return 1
 
     if read_only:
@@ -474,6 +497,8 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
         entry["push_allowed"] = True
         if push_branch and push_branch != "main":
             entry["push_branch"] = push_branch
+    if allow_db_apply:
+        entry["db_apply_allowed"] = True
 
     if not os.path.isdir(root):
         print("Warning: {} doesn't exist on disk yet.".format(root))
@@ -514,6 +539,9 @@ def provision(label, root, lanes, session_tools, write_extensions, read_only=Fal
             push_branch or "main"))
         print("this repo's GitHub origin is set up on this host. Setting this")
         print("flag alone does not create that key.")
+    if allow_db_apply:
+        print("db_apply_allowed is true — this profile can run the gated")
+        print("migration-apply tool against its own declared, pending migrations.")
     print("Minted its token and wrote it to {}.".format(MAP))
     print("{}/project/{}/  (send as X-Api-Key: {})".format(BASE, label, tok))
     print("This took effect immediately — profiles.json is no longer")
@@ -571,12 +599,19 @@ def validate_entry_dict(label, entry):
                                      or push_branch.startswith("-")):
         return "{!r}: push_branch must be a non-empty string not starting with '-'".format(label)
 
+    db_apply_allowed = entry.get("db_apply_allowed", False)
+    if not isinstance(db_apply_allowed, bool):
+        return "{!r}: db_apply_allowed must be a boolean".format(label)
+    if db_apply_allowed and "core" not in lanes:
+        return "{!r}: db_apply_allowed needs a core lane".format(label)
+
     # "managed_by" is this script's own bookkeeping field -- an incoming
     # entry setting it itself would be spoofing which labels apply-state
     # is allowed to prune later, so it's rejected here rather than
     # silently overwritten.
     allowed_keys = {"root", "lanes", "session_tools", "write_extensions",
-                    "pull_allowed", "pull_branch", "push_allowed", "push_branch"}
+                    "pull_allowed", "pull_branch", "push_allowed", "push_branch",
+                    "db_apply_allowed"}
     extra_keys = set(entry) - allowed_keys
     if extra_keys:
         return "{!r}: unexpected field(s): {}".format(label, ", ".join(sorted(extra_keys)))
@@ -735,10 +770,12 @@ if __name__ == "__main__":
         pull_branch = opt("--pull-branch")
         allow_push = "--allow-push" in args
         push_branch = opt("--push-branch")
+        allow_db_apply = "--allow-db-apply" in args
         sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools,
                             write_extensions, read_only=read_only,
                             allow_pull=allow_pull, pull_branch=pull_branch,
-                            allow_push=allow_push, push_branch=push_branch))
+                            allow_push=allow_push, push_branch=push_branch,
+                            allow_db_apply=allow_db_apply))
     if "--provision" in args:
         label = opt("--provision")
         root = opt("--root")
@@ -755,10 +792,12 @@ if __name__ == "__main__":
         pull_branch = opt("--pull-branch")
         allow_push = "--allow-push" in args
         push_branch = opt("--push-branch")
+        allow_db_apply = "--allow-db-apply" in args
         sys.exit(provision(label, root, parse_lanes(lanes_spec), session_tools,
                             write_extensions, read_only=read_only,
                             allow_pull=allow_pull, pull_branch=pull_branch,
-                            allow_push=allow_push, push_branch=push_branch))
+                            allow_push=allow_push, push_branch=push_branch,
+                            allow_db_apply=allow_db_apply))
     if "--url" in args:
         sys.exit(show_url(opt("--url")))
     if "--rotate" in args:
