@@ -428,7 +428,7 @@ final class ArchProfiles
      *
      * @param array<string, mixed> $profile
      *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string}|null
+     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool}|null
      */
     private static function validate(array $profile): ?array
     {
@@ -534,6 +534,29 @@ final class ArchProfiles
             $pushBranch = $profile['push_branch'];
         }
 
+        // Gated per-profile, same treatment as pull_allowed/push_allowed
+        // above: whether this token may run the one write-capable DB-
+        // migration operation this server exposes --
+        // archCoreDbApplyMigrations(). Off by default; only a profile
+        // explicitly given `db_apply_allowed: true` in profiles.json
+        // carries this. See that method's own docblock in ArchTools.php,
+        // and public/index.php's matching gate on this same key for the
+        // tool-registration half of this same check.
+        //
+        // FIX 2026-09-20: this field was read and gated on in both
+        // ArchTools.php ($this->dbApplyAllowed) and public/index.php (the
+        // tool-registration block) from the day the migration-apply tool
+        // shipped (2026-09-17), but this function -- the one place that
+        // actually turns a raw profiles.json entry into the validated
+        // array both of those read from -- never carried the key
+        // through. Every profile's db_apply_allowed was silently dropped
+        // here, so the flag could never take effect no matter what
+        // profiles.json said: setting it produced "Tool not found",
+        // identical to the flag being absent entirely, rather than
+        // anything pointing at the real cause. See
+        // claude/note-2026-09-20-db-migration-status-check.md.
+        $dbApplyAllowed = true === ($profile['db_apply_allowed'] ?? false);
+
         // "project" (default) or "group". A group's root holds one
         // subdirectory per sub-project; the URL selects which.
         $kind = $profile['kind'] ?? 'project';
@@ -553,6 +576,7 @@ final class ArchProfiles
             'pull_branch' => $pullBranch,
             'push_allowed' => $pushAllowed,
             'push_branch' => $pushBranch,
+            'db_apply_allowed' => $dbApplyAllowed,
         ];
     }
 }
