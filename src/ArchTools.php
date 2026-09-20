@@ -1580,7 +1580,36 @@ final class ArchTools
                     $migration['description'] ?? null,
                     'agent:archCoreDbApplyMigrations',
                 ]);
-                $pdo->commit();
+                // MySQL implicitly commits any open transaction the moment a DDL
+                // statement (ALTER TABLE, CREATE TABLE, ...) runs inside it -- this
+                // is server behavior, not something PDO or this code controls. A
+                // schema-additive migration's own ALTER/CREATE statement above
+                // therefore already ended this transaction, and -- since the
+                // connection falls back to autocommit once that implicit COMMIT
+                // fires -- the schema_migrations INSERT just above already landed
+                // on its own too. Only call commit() if PDO still thinks a
+                // transaction is open (true for a data-only migration with no DDL
+                // in it; false for anything schema-additive), so this never calls
+                // commit() against a transaction MySQL already closed out from
+                // under us.
+                //
+                // FIX 2026-09-21: without this check, any plain schema-additive
+                // ALTER TABLE reported "There is no active transaction" here even
+                // though both the ALTER and the tracking INSERT had already landed
+                // correctly -- a false failure, not a real one. Reproduced live
+                // against both arch-portal-staging and arch-portal (production):
+                // the tool returned {"success": false, "error": "... There is no
+                // active transaction", "applied_before_failure": []} for
+                // 2026-09-20f-users-auth-model-add-hide on both, yet
+                // arch_core_db_pending_migrations immediately afterward showed the
+                // migration already recorded as applied on both -- the ALTER and
+                // the INSERT had both gone through; only this redundant commit()
+                // call was throwing. See claude/note-2026-09-20-db-migration-
+                // status-check.md and claude/note-2026-09-21-db-apply-transaction-
+                // false-failure-fix.md.
+                if ($pdo->inTransaction()) {
+                    $pdo->commit();
+                }
                 $applied[] = $migration['id'];
                 $this->logger->info('DB migration applied (gated).', ['id' => $migration['id'], 'type' => $type]);
             } catch (\PDOException $e) {
