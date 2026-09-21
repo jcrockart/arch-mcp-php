@@ -88,6 +88,12 @@ final class ArchTools
     private bool $dbApplyAllowed;
 
     /**
+     * Whether this profile may run archBootstrapFillInceptionRow(). Off by
+     * default -- same opt-in pattern as the other gated flags above.
+     */
+    private bool $bootstrapFillAllowed;
+
+    /**
      * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
      *        Resolved token profile (ArchProfiles::resolve). Null is
      *        accepted only so existing unit tests that construct this
@@ -108,6 +114,7 @@ final class ArchTools
         $this->pushAllowed = $profile['push_allowed'] ?? false;
         $this->pushBranch = $profile['push_branch'] ?? 'main';
         $this->dbApplyAllowed = $profile['db_apply_allowed'] ?? false;
+        $this->bootstrapFillAllowed = $profile['bootstrap_fill_allowed'] ?? false;
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -1631,6 +1638,94 @@ final class ArchTools
         ]);
 
         return ['success' => true, 'applied' => $applied, 'skipped' => $skipped];
+    }
+
+    /**
+     * Fill in a Portal project request from a completed bootstrap interview.
+     *
+     * Calls out to arch-portal's own inception-fill endpoint over HTTPS,
+     * carrying the slug + one-time token the requester was handed on
+     * Portal's confirmation screen (see claude/proposal-portal-first-
+     * project-inception.md) -- this tool's own gate (bootstrapFillAllowed)
+     * only decides whether THIS PROFILE may attempt the call at all; the
+     * slug+token pair is what Portal itself checks before touching
+     * anything, so a caller with this tool but a wrong/reused/unknown
+     * token still can't write to any row. Portal, not this server, remains
+     * the sole writer of its own `projects` table -- this method never
+     * touches a database directly, matching the existing division of
+     * responsibility between the two apps (see ArchMcpClient.php on
+     * Portal's side, which calls INTO this server the other direction;
+     * this is the same shape, reversed).
+     *
+     * @param string $slug       the project slug the requester was given
+     * @param string $token      the one-time inception token shown on Portal's
+     *                            confirmation screen alongside that slug
+     * @param string $configJson the project.config.json draft this session
+     *                            produced (or would have printed as text) --
+     *                            stored verbatim on the project's request for
+     *                            a human to review before approving, not
+     *                            parsed or trusted as structured data by
+     *                            either this method or Portal's endpoint
+     * @param string $gitRemote  optional -- git.remote from the same draft,
+     *                            if known; the one field Portal maps onto a
+     *                            real column (projects.git_repo_url) rather
+     *                            than just storing as text, since it's
+     *                            unambiguous
+     *
+     * @return array<string, mixed>
+     */
+    public function archBootstrapFillInceptionRow(string $slug, string $token, string $configJson, string $gitRemote = ''): array
+    {
+        if (!$this->bootstrapFillAllowed) {
+            return ['success' => false, 'error' => 'this token is not permitted to fill in Portal project requests'];
+        }
+
+        if ('' === $slug || 1 !== preg_match('/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/', $slug)) {
+            return ['success' => false, 'error' => 'slug must be short, kebab-case (letters, digits, hyphens)'];
+        }
+        if ('' === $token || 1 !== preg_match('/^[0-9a-f]{16,128}$/', $token)) {
+            return ['success' => false, 'error' => 'token looks malformed -- expected the hex string shown on the Portal confirmation screen'];
+        }
+        if (\strlen($configJson) > 20000) {
+            return ['success' => false, 'error' => 'config draft is too long (max 20000 characters)'];
+        }
+
+        $payload = json_encode([
+            'slug' => $slug,
+            'token' => $token,
+            'config' => $configJson,
+            'git_remote' => '' !== $gitRemote ? $gitRemote : null,
+        ]);
+
+        $ch = curl_init(ArchConfig::PORTAL_INCEPTION_FILL_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 5,
+        ]);
+        $raw = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $err = curl_error($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if (0 !== $errno) {
+            $this->logger->error('Bootstrap inception-fill call failed.', ['errno' => $errno, 'error' => $err]);
+            return ['success' => false, 'error' => 'could not reach Portal: '.$err];
+        }
+
+        $decoded = \is_string($raw) ? json_decode($raw, true) : null;
+        if (!\is_array($decoded)) {
+            $this->logger->error('Bootstrap inception-fill returned non-JSON.', ['status' => $status]);
+            return ['success' => false, 'error' => "Portal returned an unexpected response (HTTP {$status})"];
+        }
+
+        $this->logger->info('Bootstrap inception-fill call complete.', ['slug' => $slug, 'status' => $status, 'success' => $decoded['success'] ?? false]);
+
+        return $decoded;
     }
 
     /**
