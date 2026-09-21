@@ -428,7 +428,7 @@ final class ArchProfiles
      *
      * @param array<string, mixed> $profile
      *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool}|null
+     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null}|null
      */
     private static function validate(array $profile): ?array
     {
@@ -576,6 +576,31 @@ final class ArchProfiles
         // block, and claude/proposal-portal-first-project-inception.md.
         $bootstrapFillAllowed = true === ($profile['bootstrap_fill_allowed'] ?? false);
 
+        // The Portal endpoint archBootstrapFillInceptionRow() posts to.
+        // Deliberately DATA here, not a compiled-in ArchConfig constant
+        // (an earlier draft tried that and it was wrong) -- staging and
+        // production are two live checkouts of the SAME git history
+        // (staging pushes to origin, production fast-forward-pulls from
+        // it), so a hardcoded PHP constant cannot safely differ between
+        // them without a fragile manual re-edit after every pull. This
+        // is exactly the class of value profiles.json/tokens.json were
+        // deliberately moved out of git for in the first place (see this
+        // file's own MOVED 2026-09-12 note above) -- so the fix is to put
+        // it there too, not to invent a second mechanism. REQUIRED, and
+        // validated as a real https:// URL, whenever bootstrap_fill_allowed
+        // is true; missing or malformed fails the WHOLE PROFILE closed,
+        // same as every other required field in this function -- there is
+        // no default URL and there must never be one, same reasoning as
+        // "there is no default profile" in this file's own top docblock.
+        $bootstrapFillPortalUrl = null;
+        if ($bootstrapFillAllowed) {
+            $url = $profile['bootstrap_fill_portal_url'] ?? null;
+            if (!\is_string($url) || 1 !== preg_match('#^https://[A-Za-z0-9.-]+(?::\d+)?(/.*)?$#', $url)) {
+                return null;
+            }
+            $bootstrapFillPortalUrl = $url;
+        }
+
         // "project" (default) or "group". A group's root holds one
         // subdirectory per sub-project; the URL selects which.
         $kind = $profile['kind'] ?? 'project';
@@ -597,6 +622,7 @@ final class ArchProfiles
             'push_branch' => $pushBranch,
             'db_apply_allowed' => $dbApplyAllowed,
             'bootstrap_fill_allowed' => $bootstrapFillAllowed,
+            'bootstrap_fill_portal_url' => $bootstrapFillPortalUrl,
         ];
     }
 }
