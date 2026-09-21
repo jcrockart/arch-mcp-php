@@ -19,6 +19,13 @@
     "config": {
         "allow-plugins": {
             "php-http/discovery": true
+        },
+        "policy": {
+            "advisories": {
+                "ignore-id": {
+                    "PKSA-y2cr-5h3j-g3ys": "CVE-2025-45769: firebase/php-jwt accepting short/weak HMAC (HS*) keys without a minimum-length check. This app only ever constructs a firebase/php-jwt Key with RS256 (Portal's RSA public key, in OAuthBearer.php) to VERIFY tokens Portal already signed with league/oauth2-server's own CryptKey — it never signs anything and never constructs an HMAC key with this library, so the HS*-weak-key code path this advisory concerns is not reachable from this codebase. Also disputed by NVD/MITRE (no CVSS assigned; 'key lengths are expected to be set by an application, not by this library') — see https://github.com/firebase/php-jwt/issues/620. Revisit if this app ever adds an HS256 use of firebase/php-jwt."
+                }
+            }
         }
     }
 }
