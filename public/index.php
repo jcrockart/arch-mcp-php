@@ -20,9 +20,14 @@ require_once dirname(__DIR__).'/vendor/autoload.php';
 // would find it anyway; this just removes a failure mode from the
 // deploy. Harmless either way (require_once).
 require_once dirname(__DIR__).'/src/ArchProfiles.php';
+require_once dirname(__DIR__).'/src/OAuthBearer.php';
+require_once dirname(__DIR__).'/src/PortalProjectResolver.php';
+require_once dirname(__DIR__).'/src/ProjectsTools.php';
 
 use ArchMcp\ArchProfiles;
 use ArchMcp\ArchTools;
+use ArchMcp\OAuthBearer;
+use ArchMcp\ProjectsTools;
 use Laminas\HttpHandlerRunner\Emitter\SapiEmitter;
 use Mcp\Capability\Registry\Container;
 use Mcp\Schema\ServerCapabilities;
@@ -60,6 +65,106 @@ set_exception_handler(static function (\Throwable $t): void {
 });
 
 $logger = archMcpLogger();
+
+// ---------------------------------------------------------------------
+// /projects — Slice 2 of claude/proposal-arch-mcp-oauth-projects-
+// connector.md. A DIFFERENT address, a DIFFERENT authentication
+// mechanism, checked BEFORE the token-gate block below rather than
+// folded into it: every other address authenticates a single token
+// that names ITS OWN profile up front (X-Api-Key, ArchProfiles.php);
+// this one authenticates a Portal USER via a short-lived OAuth bearer
+// JWT (Authorization header, OAuthBearer.php), and which project a
+// call concerns is only known once that call supplies a `slug`
+// argument — see ProjectsTools.php's own docblock for why that changes
+// the tool-registration shape below (everything unconditional; the
+// runtime check inside ProjectsTools/PortalProjectResolver carries the
+// full weight, not an advertised-list filter).
+//
+// Same fail-closed, 404-not-401/403 posture as the token gate below:
+// no header, malformed token, bad signature, expired, wrong scope —
+// all indistinguishable from "nothing here". Never logs the raw token.
+// ---------------------------------------------------------------------
+$requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
+if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath)) {
+    $claims = OAuthBearer::verifyRequest($_SERVER);
+
+    if (null === $claims) {
+        $logger->warning('Rejected /projects MCP request', ['via' => 'oauth-bearer']);
+        http_response_code(404);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'not_found']);
+        exit;
+    }
+
+    $portalUserId = $claims['sub'];
+    $logger->info('MCP /projects request authorised', ['portal_user_id' => $portalUserId]);
+
+    $container = new Container();
+    $container->set(LoggerInterface::class, $logger);
+    $container->set(ProjectsTools::class, new ProjectsTools($logger, $portalUserId));
+
+    // Partitioned per Portal user, same isolation principle as the
+    // per-address partitioning below — one authenticated user's MCP
+    // session state must never be visible to another.
+    $sessionDir = dirname(__DIR__).'/var/sessions/projects-'.hash('sha256', $portalUserId);
+
+    $builder = Server::builder()
+        ->setServerInfo('arch-mcp (projects)', '0.3.0')
+        ->setLogger($logger)
+        ->setContainer($container)
+        ->setSession(new FileSessionStore($sessionDir))
+        ->addTool([ProjectsTools::class, 'archSessionStart'], 'arch_session_start')
+        ->addTool([ProjectsTools::class, 'archCodegenPreview'], 'arch_codegen_preview')
+        ->addTool([ProjectsTools::class, 'archSessionCommit'], 'arch_session_commit')
+        ->addTool([ProjectsTools::class, 'archSessionDiscard'], 'arch_session_discard')
+        ->addTool([ProjectsTools::class, 'archSessionStatus'], 'arch_session_status')
+        ->addTool([ProjectsTools::class, 'archSessionWriteFile'], 'arch_session_write_file')
+        ->addTool([ProjectsTools::class, 'archSessionReadFile'], 'arch_session_read_file')
+        ->addTool([ProjectsTools::class, 'archSessionListFiles'], 'arch_session_list_files')
+        ->addTool([ProjectsTools::class, 'archCodeWriteFile'], 'arch_code_write_file')
+        ->addTool([ProjectsTools::class, 'archCodeReadFile'], 'arch_code_read_file')
+        ->addTool([ProjectsTools::class, 'archCodeListFiles'], 'arch_code_list_files')
+        ->addTool([ProjectsTools::class, 'archSiteWriteFile'], 'arch_site_write_file')
+        ->addTool([ProjectsTools::class, 'archSiteReadFile'], 'arch_site_read_file')
+        ->addTool([ProjectsTools::class, 'archSiteListFiles'], 'arch_site_list_files')
+        ->addTool([ProjectsTools::class, 'archAssetsWriteFile'], 'arch_assets_write_file')
+        ->addTool([ProjectsTools::class, 'archAssetsReadFile'], 'arch_assets_read_file')
+        ->addTool([ProjectsTools::class, 'archAssetsListFiles'], 'arch_assets_list_files')
+        ->addTool([ProjectsTools::class, 'archCoreGitStatus'], 'arch_core_git_status')
+        ->addTool([ProjectsTools::class, 'archCoreGitDiff'], 'arch_core_git_diff')
+        ->addTool([ProjectsTools::class, 'archCoreGitLog'], 'arch_core_git_log')
+        ->addTool([ProjectsTools::class, 'archCoreGitShow'], 'arch_core_git_show')
+        ->addTool([ProjectsTools::class, 'archCoreGitFetch'], 'arch_core_git_fetch')
+        ->addTool([ProjectsTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull')
+        ->addTool([ProjectsTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push')
+        ->addTool([ProjectsTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations')
+        ->addTool([ProjectsTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations')
+        ->setCapabilities(new ServerCapabilities(
+            tools: true,
+            toolsListChanged: false,
+            resources: false,
+            resourcesSubscribe: false,
+            resourcesListChanged: false,
+            prompts: false,
+            promptsListChanged: false,
+            logging: false,
+            completions: false,
+        ));
+
+    $server = $builder->build();
+
+    $psr17 = new Psr17Factory();
+    $transport = new StreamableHttpTransport(
+        $psr17->createServerRequestFromGlobals(),
+        logger: $logger,
+    );
+
+    $response = $server->run($transport);
+
+    (new SapiEmitter())->emit($response);
+
+    exit;
+}
 
 // ---------------------------------------------------------------------
 // Token gate. Added 2026-09-01, addressing scheme revised 2026-09-02.

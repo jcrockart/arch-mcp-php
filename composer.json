@@ -8,7 +8,8 @@
         "mcp/sdk": "^0.1",
         "nyholm/psr7": "^1.8",
         "nyholm/psr7-server": "^1.1",
-        "laminas/laminas-httphandlerrunner": "^2.12"
+        "laminas/laminas-httphandlerrunner": "^2.12",
+        "firebase/php-jwt": "^6.10"
     },
     "autoload": {
         "psr-4": {
