@@ -93,6 +93,8 @@ final class ArchTools
      */
     private bool $bootstrapFillAllowed;
 
+    private ?string $bootstrapFillPortalUrl;
+
     /**
      * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
      *        Resolved token profile (ArchProfiles::resolve). Null is
@@ -115,6 +117,7 @@ final class ArchTools
         $this->pushBranch = $profile['push_branch'] ?? 'main';
         $this->dbApplyAllowed = $profile['db_apply_allowed'] ?? false;
         $this->bootstrapFillAllowed = $profile['bootstrap_fill_allowed'] ?? false;
+        $this->bootstrapFillPortalUrl = is_string($profile['bootstrap_fill_portal_url'] ?? null) ? $profile['bootstrap_fill_portal_url'] : null;
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -1680,6 +1683,10 @@ final class ArchTools
             return ['success' => false, 'error' => 'this token is not permitted to fill in Portal project requests'];
         }
 
+        if (null === $this->bootstrapFillPortalUrl) {
+            return ['success' => false, 'error' => 'this token has no Portal endpoint configured — profile misconfiguration, not a caller error'];
+        }
+
         if ('' === $slug || 1 !== preg_match('/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/', $slug)) {
             return ['success' => false, 'error' => 'slug must be short, kebab-case (letters, digits, hyphens)'];
         }
@@ -1697,7 +1704,7 @@ final class ArchTools
             'git_remote' => '' !== $gitRemote ? $gitRemote : null,
         ]);
 
-        $ch = curl_init(ArchConfig::PORTAL_INCEPTION_FILL_URL);
+        $ch = curl_init($this->bootstrapFillPortalUrl);
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => $payload,
