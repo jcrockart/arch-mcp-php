@@ -428,7 +428,7 @@ final class ArchProfiles
      *
      * @param array<string, mixed> $profile
      *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool}|null
+     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool}|null
      */
     private static function validate(array $profile): ?array
     {
@@ -557,6 +557,25 @@ final class ArchProfiles
         // claude/note-2026-09-20-db-migration-status-check.md.
         $dbApplyAllowed = true === ($profile['db_apply_allowed'] ?? false);
 
+        // Gated per-profile, but DELIBERATELY NOT lane-coupled unlike
+        // pull_allowed/push_allowed/db_apply_allowed above (each of
+        // those requires a core lane to mean anything, since they all
+        // act on THIS server's own git/DB state). bootstrap_fill_allowed
+        // instead controls a single narrow capability: whether this
+        // token may call archBootstrapFillInceptionRow() to relay a
+        // completed bootstrap interview to arch-portal's own inception-
+        // fill endpoint over HTTPS, carrying a slug + one-time token the
+        // caller was handed by Portal itself. This server never touches
+        // a database for this -- Portal remains the sole writer of its
+        // own `projects` table -- so there is no lane whose presence or
+        // absence would make this check meaningful. Off by default; only
+        // a profile explicitly given `bootstrap_fill_allowed: true` in
+        // profiles.json carries this (mint-tokens.py --allow-bootstrap-
+        // fill). See that method's own docblock in ArchTools.php,
+        // public/index.php's matching (non-lane-gated) tool-registration
+        // block, and claude/proposal-portal-first-project-inception.md.
+        $bootstrapFillAllowed = true === ($profile['bootstrap_fill_allowed'] ?? false);
+
         // "project" (default) or "group". A group's root holds one
         // subdirectory per sub-project; the URL selects which.
         $kind = $profile['kind'] ?? 'project';
@@ -577,6 +596,7 @@ final class ArchProfiles
             'push_allowed' => $pushAllowed,
             'push_branch' => $pushBranch,
             'db_apply_allowed' => $dbApplyAllowed,
+            'bootstrap_fill_allowed' => $bootstrapFillAllowed,
         ];
     }
 }

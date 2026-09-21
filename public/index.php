@@ -252,6 +252,27 @@ if (isset($profile['lanes']['assets'])) {
         ->addTool([ArchTools::class, 'archAssetsListFiles'], 'arch_assets_list_files');
 }
 
+// Added 2026-09-21 — the Portal-first project inception flow (see
+// claude/proposal-portal-first-project-inception.md). Deliberately NOT
+// gated on any lane, unlike every block above: this tool doesn't read
+// or write anything in THIS profile's own tree at all. It makes an
+// outbound HTTPS call to arch-portal's own inception-fill endpoint,
+// carrying a slug + one-time token the caller was handed by Portal
+// itself when the project was requested there — Portal, not this
+// server, validates that pair and remains the sole writer of its own
+// `projects` table. So the only thing worth gating here is "may this
+// token attempt the call at all", via a new bootstrap_fill_allowed flag
+// (set in profiles.json, off by default, provisioned via
+// mint-tokens.py --allow-bootstrap-fill). Same "advertised list is a
+// filter, runtime check is the real control, both required" principle
+// as every other block above — the runtime check lives in
+// ArchTools::archBootstrapFillInceptionRow() itself
+// ($this->bootstrapFillAllowed).
+if ($profile['bootstrap_fill_allowed'] ?? false) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row');
+}
+
 $server = $builder
     ->setCapabilities(new ServerCapabilities(
         tools: true,
