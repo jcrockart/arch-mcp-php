@@ -47,6 +47,26 @@ final class OAuthBearer
      */
     private const PUBLIC_KEY_PATH = '/home/crockart/arch-mcp-secrets/oauth-public.key';
 
+    /**
+     * Path to a one-line file holding THIS deployment's Portal issuer
+     * URL — the value the /oauth-protected-resource/projects metadata
+     * route (public/index.php) advertises as `authorization_servers`.
+     * Same "copied/edited by hand once per environment, never
+     * committed" discipline as PUBLIC_KEY_PATH just above: staging's
+     * file holds staging Portal's URL (https://staging-portal.crockart.
+     * com.au), production's file holds production Portal's URL.
+     *
+     * Deliberately NOT a git-tracked ArchConfig-style constant. That
+     * exact mistake was already made and caught once in this project —
+     * see claude/proposal-portal-first-project-inception.md's
+     * 2026-09-21c entry: staging and production are two live checkouts
+     * of the SAME git history (staging pushes to origin, production
+     * fast-forward-pulls from it), so a single hardcoded value can't
+     * safely differ between them. This file lives outside git for the
+     * same reason PUBLIC_KEY_PATH does.
+     */
+    private const ISSUER_URL_PATH = '/home/crockart/arch-mcp-secrets/oauth-issuer-url.txt';
+
     /** The one scope every /projects tool call requires. */
     private const REQUIRED_SCOPE = 'mcp';
 
@@ -104,6 +124,23 @@ final class OAuthBearer
         }
 
         return ['sub' => $sub, 'aud' => $aud, 'scopes' => $scopes];
+    }
+
+    /**
+     * This deployment's Portal issuer URL, for the RFC 9728 protected-
+     * resource metadata document — or null if ISSUER_URL_PATH is
+     * missing/empty, which public/index.php treats as a deploy-time
+     * misconfiguration (fails loudly, not with an empty advertised
+     * issuer list).
+     */
+    public static function portalIssuer(): ?string
+    {
+        $issuer = @file_get_contents(self::ISSUER_URL_PATH);
+        if (false === $issuer || '' === trim($issuer)) {
+            return null;
+        }
+
+        return trim($issuer);
     }
 
     /**
