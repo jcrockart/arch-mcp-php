@@ -66,6 +66,67 @@ set_exception_handler(static function (\Throwable $t): void {
 
 $logger = archMcpLogger();
 
+// This host's own scheme+host, used below to build absolute URLs
+// (WWW-Authenticate's resource_metadata, and the metadata document's
+// own `resource` field) WITHOUT hardcoding a domain in git — staging
+// and production are two checkouts of the same git history serving two
+// different domains, so any URL that needs to differ between them has
+// to be computed from the live request or read from deploy-time state
+// outside git (see OAuthBearer::ISSUER_URL_PATH for the latter), never
+// written as a literal here.
+$requestScheme = (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS']) ? 'https' : 'http';
+$requestHost = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
+$resourceMetadataUrl = $requestScheme.'://'.$requestHost.'/oauth-protected-resource/projects';
+
+// ---------------------------------------------------------------------
+// /oauth-protected-resource/projects — RFC 9728 protected-resource
+// metadata for the OAuth-gated /projects address below. A client that
+// gets refused there is expected to fetch exactly the URL named in that
+// refusal's WWW-Authenticate header (below) to learn how to get a
+// token; this is that document.
+//
+// Served at a NON-standard path — NOT /.well-known/oauth-protected-
+// resource/projects, the RFC's conventional location — because
+// public/.htaccess's routing whitelist deliberately refuses any path
+// segment starting with a dot (documented anti-traversal hardening: "a
+// path segment may not begin with a dot"). Carving a dot-segment
+// exception into that rule is a change to host-specific deployment
+// config outside this git-tracked code lane, and a call for James, not
+// this script — flagged to him alongside this change. RFC 9728 doesn't
+// require the well-known convention path; a client is meant to fetch
+// whatever URL the header actually gives it, so this route is
+// spec-compliant, just not at the conventional location. .htaccess
+// still needs ONE new RewriteRule added (matching the existing pattern
+// already used for ^projects/?$ etc.) before this route is reachable at
+// all — that part is not done as of this commit.
+//
+// Deliberately unauthenticated: RFC 9728 protected-resource metadata
+// must be publicly fetchable, unlike every other address in this file.
+// ---------------------------------------------------------------------
+$requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
+if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/projects/?$#', $requestPath)) {
+    $issuer = OAuthBearer::portalIssuer();
+
+    if (null === $issuer) {
+        // Deploy-time misconfiguration (missing/empty ISSUER_URL_PATH
+        // file) — never advertise an empty authorization_servers list,
+        // fail loudly instead so this is noticed rather than silently
+        // breaking discovery.
+        $logger->critical('OAuthBearer::portalIssuer() unset — cannot serve protected-resource metadata');
+        http_response_code(500);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'internal_error']);
+        exit;
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'resource' => $requestScheme.'://'.$requestHost.'/projects',
+        'authorization_servers' => [$issuer],
+    ]);
+    exit;
+}
+
 // ---------------------------------------------------------------------
 // /projects — Slice 2 of claude/proposal-arch-mcp-oauth-projects-
 // connector.md. A DIFFERENT address, a DIFFERENT authentication
@@ -80,19 +141,30 @@ $logger = archMcpLogger();
 // runtime check inside ProjectsTools/PortalProjectResolver carries the
 // full weight, not an advertised-list filter).
 //
-// Same fail-closed, 404-not-401/403 posture as the token gate below:
-// no header, malformed token, bad signature, expired, wrong scope —
-// all indistinguishable from "nothing here". Never logs the raw token.
+// UNLIKE the token gate below, an unauthenticated call here gets 401 +
+// WWW-Authenticate, not a bare 404. Reviewed with James 2026-09-21 (see
+// the proposal doc): the token gate's 404-not-401/403 posture exists so
+// an unauthenticated caller can't distinguish "wrong token" from
+// "nothing here" — but /projects is meant to be discovered and driven
+// through the standard OAuth client flow (claude.ai's own connector
+// registration, among others), which requires a real 401 carrying
+// resource_metadata per RFC 9728/the MCP authorization spec. A bare 404
+// here doesn't hide anything a determined caller couldn't already tell
+// from the existence of this address in the proposal doc and the
+// broader MCP OAuth discovery convention; it only broke discovery for
+// legitimate clients. Still fails CLOSED either way — no header,
+// malformed token, bad signature, expired, wrong scope all collapse to
+// the same 401, and the raw token is never logged.
 // ---------------------------------------------------------------------
-$requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
 if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath)) {
     $claims = OAuthBearer::verifyRequest($_SERVER);
 
     if (null === $claims) {
         $logger->warning('Rejected /projects MCP request', ['via' => 'oauth-bearer']);
-        http_response_code(404);
+        http_response_code(401);
         header('Content-Type: application/json');
-        echo json_encode(['error' => 'not_found']);
+        header('WWW-Authenticate: Bearer resource_metadata="'.$resourceMetadataUrl.'"');
+        echo json_encode(['error' => 'unauthorized']);
         exit;
     }
 
