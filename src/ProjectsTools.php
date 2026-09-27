@@ -384,9 +384,32 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archDependencyInstall();
     }
 
-    // NOTE: archBootstrapFillInceptionRow is deliberately NOT exposed
-    // here. bootstrap_fill_allowed/bootstrap_fill_portal_url aren't
-    // columns on project_profiles (see db/schema.sql) — that capability
-    // stays profiles.json-only, out of scope for this slice. Revisit if
-    // /projects ever needs it.
+    // -----------------------------------------------------------------
+    // Bootstrap inception-fill — gated inside ArchTools itself via
+    // bootstrap_fill_allowed/bootstrap_fill_portal_url, same pattern as
+    // db_apply_allowed/dependency_manager above. Added 2026-09-27
+    // (claude/proposal-framework-connector-consolidation.md, slice 1) —
+    // the zero-argument case the original OAuth proposal already
+    // decided arch-bootstrap should be: an authenticated Portal user
+    // calling with slug="arch-bootstrap" needs no further per-call
+    // access check beyond profile resolution, same as this repo's other
+    // unconditionally-delegated methods above.
+    //
+    // NAMING: ArchTools::archBootstrapFillInceptionRow()'s own first
+    // parameter is ALSO called $slug — the target project being filled
+    // in (business data), not the project this call is routing against.
+    // Every other method here uses $slug for routing, so that name is
+    // kept for routing here too, and the pass-through parameter is
+    // named $targetSlug instead to avoid the collision. This is a
+    // one-off, deliberate exception to "just add slug to the front of
+    // ArchTools' own signature" — every other method's parameters
+    // happened not to collide.
+    // -----------------------------------------------------------------
+
+    public function archBootstrapFillInceptionRow(string $slug, string $targetSlug, string $token, string $configJson, string $gitRemote = ''): array
+    {
+        $t = $this->forSlugFile($slug);
+
+        return \is_array($t) ? $t : $t->archBootstrapFillInceptionRow($targetSlug, $token, $configJson, $gitRemote);
+    }
 }

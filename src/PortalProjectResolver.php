@@ -50,6 +50,23 @@ namespace ArchMcp;
  * Portal are built from. EXTENDED 2026-09-27 (Confluence 49840130) to
  * also deny a locked dependency install (archDependencyInstall) for the
  * same reason — see the override below.
+ *
+ * EXTENDED 2026-09-27 (claude/proposal-framework-connector-consolidation.md,
+ * slice 1): bootstrap_fill_allowed/bootstrap_fill_portal_url are now real
+ * project_profiles columns instead of a hardcoded false/null, so
+ * arch-bootstrap (a framework project, per the carve-out above) can fold
+ * into this address as the zero-argument case the original OAuth proposal
+ * already decided it should be. This flag is deliberately NOT added to
+ * the framework carve-out below: it's the one capability a framework
+ * project (specifically arch-bootstrap) is meant to grant through this
+ * address — the carve-out exists to stop an untrusted caller reaching a
+ * framework checkout's code/session tools, not to block Portal's own
+ * inception-fill callback, which never touches a framework checkout at
+ * all (it POSTs to Portal's own HTTP endpoint — see ArchTools::
+ * archBootstrapFillInceptionRow()). No other framework project is
+ * expected to ever have this column set true; nothing here prevents that
+ * defensively beyond the data itself, matching db_apply_allowed's own
+ * data-driven-only posture above.
  */
 final class PortalProjectResolver
 {
@@ -106,7 +123,8 @@ final class PortalProjectResolver
             $stmt = $pdo->prepare(
                 'SELECT p.category, pp.root, pp.lanes, pp.session_tools, pp.write_extensions,
                         pp.pull_allowed, pp.pull_branch, pp.push_allowed, pp.push_branch,
-                        pp.db_apply_allowed, pp.dependency_manager, pp.dependency_exclude
+                        pp.db_apply_allowed, pp.dependency_manager, pp.dependency_exclude,
+                        pp.bootstrap_fill_allowed, pp.bootstrap_fill_portal_url
                  FROM projects p
                  JOIN project_members pm ON pm.project_id = p.id
                  JOIN project_profiles pp ON pp.project_id = p.id AND pp.environment = :environment
@@ -217,6 +235,16 @@ final class PortalProjectResolver
             $dependencyManager = 'none';
         }
 
+        // Real project_profiles columns as of
+        // db/migrations/0023_2026-09-27c-bootstrap-fill-columns.sql (see
+        // claude/proposal-framework-connector-consolidation.md, slice 1).
+        // Deliberately NOT folded into the framework carve-out below —
+        // see this class's top docblock.
+        $bootstrapFillAllowed = (bool) ($row['bootstrap_fill_allowed'] ?? false);
+        $bootstrapFillPortalUrl = \is_string($row['bootstrap_fill_portal_url'] ?? null) && '' !== $row['bootstrap_fill_portal_url']
+            ? $row['bootstrap_fill_portal_url']
+            : null;
+
         // FRAMEWORK CARVE-OUT — see this class's top docblock. Applied
         // here, unconditionally, after every other field has already
         // been read from the row: a framework project never grants
@@ -233,6 +261,10 @@ final class PortalProjectResolver
         // reaches the framework itself" risk category session_tools/push
         // were already carved out for, not a materially smaller one just
         // because the install is locked.
+        //
+        // bootstrap_fill_allowed/bootstrap_fill_portal_url are deliberately
+        // NOT zeroed here — see this class's top docblock, "EXTENDED
+        // 2026-09-27 ... slice 1".
         if ('framework' === ($row['category'] ?? null)) {
             $sessionTools = false;
             $pushAllowed = false;
@@ -253,11 +285,8 @@ final class PortalProjectResolver
             'push_allowed' => $pushAllowed,
             'push_branch' => \is_string($row['push_branch'] ?? null) ? $row['push_branch'] : 'main',
             'db_apply_allowed' => $dbApplyAllowed,
-            // Not yet stored in project_profiles (see db/schema.sql) —
-            // bootstrap-fill stays profiles.json-only for now, out of
-            // scope for this slice. Revisit if /projects ever needs it.
-            'bootstrap_fill_allowed' => false,
-            'bootstrap_fill_portal_url' => null,
+            'bootstrap_fill_allowed' => $bootstrapFillAllowed,
+            'bootstrap_fill_portal_url' => $bootstrapFillPortalUrl,
             'dependency_manager' => $dependencyManager,
             'dependency_exclude' => $dependencyExclude,
         ];
