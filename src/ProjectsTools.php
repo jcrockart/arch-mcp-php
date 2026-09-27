@@ -371,6 +371,19 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreDbApplyMigrations();
     }
 
+    // -----------------------------------------------------------------
+    // Dependency install — gated inside ArchTools itself via
+    // dependency_manager/dependency_exclude, same as db_apply_allowed
+    // above. Added 2026-09-27 (Confluence 49840130).
+    // -----------------------------------------------------------------
+
+    public function archDependencyInstall(string $slug): array
+    {
+        $t = $this->forSlugFile($slug);
+
+        return \is_array($t) ? $t : $t->archDependencyInstall();
+    }
+
     // NOTE: archBootstrapFillInceptionRow is deliberately NOT exposed
     // here. bootstrap_fill_allowed/bootstrap_fill_portal_url aren't
     // columns on project_profiles (see db/schema.sql) — that capability

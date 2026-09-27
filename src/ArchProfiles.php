@@ -428,7 +428,7 @@ final class ArchProfiles
      *
      * @param array<string, mixed> $profile
      *
-     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null}|null
+     * @return array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
     private static function validate(array $profile): ?array
     {
@@ -601,6 +601,34 @@ final class ArchProfiles
             $bootstrapFillPortalUrl = $url;
         }
 
+        // Gated per-profile, same opt-in pattern as pull_allowed/push_allowed/db_apply_allowed
+        // above: which locked-install tool (if any) this profile may run via
+        // archDependencyInstall(). 'none' (absent) by default; a profile must be explicitly
+        // given dependency_manager: 'composer' or 'npm' in profiles.json to carry this. See
+        // that method's own docblock in ArchTools.php. Added 2026-09-27 (Confluence 49840130).
+        $dependencyManager = $profile['dependency_manager'] ?? 'none';
+        if (!\in_array($dependencyManager, ['none', 'composer', 'npm'], true)) {
+            return null;
+        }
+
+        // Optional package denylist for archDependencyInstall() -- same shape and same
+        // "absent means no restriction" contract as write_extensions above, just enforced the
+        // other direction (refuse if the LOCKFILE names one of these, rather than restrict
+        // what CAN be written).
+        $dependencyExclude = null;
+        if (isset($profile['dependency_exclude'])) {
+            if (!\is_array($profile['dependency_exclude'])) {
+                return null;
+            }
+            $dependencyExclude = [];
+            foreach ($profile['dependency_exclude'] as $pkg) {
+                if (!\is_string($pkg) || 1 !== preg_match('/^(@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i', $pkg)) {
+                    return null;
+                }
+                $dependencyExclude[] = $pkg;
+            }
+        }
+
         // "project" (default) or "group". A group's root holds one
         // subdirectory per sub-project; the URL selects which.
         $kind = $profile['kind'] ?? 'project';
@@ -623,6 +651,8 @@ final class ArchProfiles
             'db_apply_allowed' => $dbApplyAllowed,
             'bootstrap_fill_allowed' => $bootstrapFillAllowed,
             'bootstrap_fill_portal_url' => $bootstrapFillPortalUrl,
+            'dependency_manager' => $dependencyManager,
+            'dependency_exclude' => $dependencyExclude,
         ];
     }
 }

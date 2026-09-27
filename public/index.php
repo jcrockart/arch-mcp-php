@@ -211,6 +211,7 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath
         ->addTool([ProjectsTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push')
         ->addTool([ProjectsTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations')
         ->addTool([ProjectsTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations')
+        ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
         ->setCapabilities(new ServerCapabilities(
             tools: true,
             toolsListChanged: false,
@@ -384,6 +385,17 @@ if (isset($profile['lanes']['core'])) {
 if (isset($profile['lanes']['core']) && ($profile['db_apply_allowed'] ?? false)) {
     $builder = $builder
         ->addTool([ArchTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations');
+}
+
+// Companion to db_apply_allowed above -- same opt-in-per-profile pattern, via
+// dependency_manager (set in profiles.json/project_profiles, 'none' by default, never by the
+// live MCP request). A profile without a manager configured doesn't even see this tool exists;
+// the runtime check lives in ArchTools::archDependencyInstall() itself
+// ($this->dependencyManager), so this is belt-and-suspenders, not the only enforcement -- same
+// two-layer principle as every other gated tool in this file. See Confluence 49840130.
+if (isset($profile['lanes']['core']) && 'none' !== ($profile['dependency_manager'] ?? 'none')) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archDependencyInstall'], 'arch_dependency_install');
 }
 
 // Added 2026-08-31, deployed with James live at the terminal after an

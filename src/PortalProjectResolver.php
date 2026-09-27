@@ -47,7 +47,9 @@ namespace ArchMcp;
  * to inspect it), but never for the two capabilities that could let an
  * untrusted or lower-trust caller push code into, or run arbitrary
  * session/codegen tooling against, the very framework this server and
- * Portal are built from.
+ * Portal are built from. EXTENDED 2026-09-27 (Confluence 49840130) to
+ * also deny a locked dependency install (archDependencyInstall) for the
+ * same reason — see the override below.
  */
 final class PortalProjectResolver
 {
@@ -73,7 +75,7 @@ final class PortalProjectResolver
     private static ?\PDO $pdo = null;
 
     /**
-     * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null}|null
+     * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
     public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger): ?array
     {
@@ -104,7 +106,7 @@ final class PortalProjectResolver
             $stmt = $pdo->prepare(
                 'SELECT p.category, pp.root, pp.lanes, pp.session_tools, pp.write_extensions,
                         pp.pull_allowed, pp.pull_branch, pp.push_allowed, pp.push_branch,
-                        pp.db_apply_allowed
+                        pp.db_apply_allowed, pp.dependency_manager, pp.dependency_exclude
                  FROM projects p
                  JOIN project_members pm ON pm.project_id = p.id
                  JOIN project_profiles pp ON pp.project_id = p.id AND pp.environment = :environment
@@ -135,7 +137,7 @@ final class PortalProjectResolver
     /**
      * @param array<string, mixed> $row
      *
-     * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null}|null
+     * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
     private static function rowToProfile(string $slug, array $row): ?array
     {
@@ -186,14 +188,56 @@ final class PortalProjectResolver
         $pullAllowed = (bool) ($row['pull_allowed'] ?? false);
         $dbApplyAllowed = (bool) ($row['db_apply_allowed'] ?? false);
 
+        // Which locked-install tool (if any) this profile may run via
+        // archDependencyInstall(), and an optional package denylist for it.
+        // Added 2026-09-27 (Confluence 49840130) — same fail-closed shape as
+        // write_extensions above: malformed input rejects the WHOLE
+        // profile, not just this field.
+        $dependencyExclude = null;
+        if (null !== $row['dependency_exclude']) {
+            $decoded = json_decode((string) $row['dependency_exclude'], true);
+            if (!\is_array($decoded)) {
+                return null;
+            }
+            $dependencyExclude = [];
+            foreach ($decoded as $pkg) {
+                // Package names span both ecosystems this feeds: Composer's
+                // "vendor/name" and npm's plain or "@scope/name" shapes.
+                // Looser than write_extensions' own [a-z0-9]{1,8} check for
+                // that reason.
+                if (!\is_string($pkg) || 1 !== preg_match('/^(@[a-z0-9-][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i', $pkg)) {
+                    return null;
+                }
+                $dependencyExclude[] = $pkg;
+            }
+        }
+
+        $dependencyManager = \is_string($row['dependency_manager'] ?? null) ? $row['dependency_manager'] : 'none';
+        if (!\in_array($dependencyManager, ['none', 'composer', 'npm'], true)) {
+            $dependencyManager = 'none';
+        }
+
         // FRAMEWORK CARVE-OUT — see this class's top docblock. Applied
         // here, unconditionally, after every other field has already
         // been read from the row: a framework project never grants
         // session_tools or push through this address, regardless of
         // what project_profiles says. Pull/read access is unaffected.
+        //
+        // DECIDED 2026-09-27, alongside archDependencyInstall (Confluence
+        // 49840130): extended to also deny a locked dependency install for
+        // framework projects (arch-core, arch-mcp, arch-portal,
+        // arch-bootstrap). Rationale: this server and Portal are built FROM
+        // these repos, and even a locked, network-egress-only install
+        // still runs arbitrary packages' own install/postinstall scripts
+        // against a framework checkout — the same "untrusted caller
+        // reaches the framework itself" risk category session_tools/push
+        // were already carved out for, not a materially smaller one just
+        // because the install is locked.
         if ('framework' === ($row['category'] ?? null)) {
             $sessionTools = false;
             $pushAllowed = false;
+            $dependencyManager = 'none';
+            $dependencyExclude = null;
         }
 
         return [
@@ -214,6 +258,8 @@ final class PortalProjectResolver
             // scope for this slice. Revisit if /projects ever needs it.
             'bootstrap_fill_allowed' => false,
             'bootstrap_fill_portal_url' => null,
+            'dependency_manager' => $dependencyManager,
+            'dependency_exclude' => $dependencyExclude,
         ];
     }
 

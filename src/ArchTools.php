@@ -96,7 +96,24 @@ final class ArchTools
     private ?string $bootstrapFillPortalUrl;
 
     /**
-     * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool}|null $profile
+     * 'none' | 'composer' | 'npm' -- which locked-install tool (if any) this
+     * profile may run via archDependencyInstall(). Off ('none') by default,
+     * same opt-in pattern as the other gated flags above. Added 2026-09-27
+     * (Confluence 49840130: Proposal: Composer/PHP Dependency Support
+     * Across ARCH Projects).
+     */
+    private string $dependencyManager;
+
+    /**
+     * @var list<string>|null package names this profile's install may
+     *                        never bring in, regardless of the lockfile.
+     *                        Absent (null) means no restriction. See
+     *                        archDependencyInstall()'s own docblock.
+     */
+    private ?array $dependencyExclude;
+
+    /**
+     * @param array{label: string, root: string, lanes: array<string, string>, session_tools: bool, write_extensions?: list<string>|null, pull_allowed?: bool, pull_branch?: string, push_allowed?: bool, push_branch?: string, db_apply_allowed?: bool, bootstrap_fill_allowed?: bool, bootstrap_fill_portal_url?: string|null, dependency_manager?: string, dependency_exclude?: list<string>|null}|null $profile
      *        Resolved token profile (ArchProfiles::resolve). Null is
      *        accepted only so existing unit tests that construct this
      *        class directly keep working; in that case it falls back to
@@ -118,6 +135,8 @@ final class ArchTools
         $this->dbApplyAllowed = $profile['db_apply_allowed'] ?? false;
         $this->bootstrapFillAllowed = $profile['bootstrap_fill_allowed'] ?? false;
         $this->bootstrapFillPortalUrl = is_string($profile['bootstrap_fill_portal_url'] ?? null) ? $profile['bootstrap_fill_portal_url'] : null;
+        $this->dependencyManager = \is_string($profile['dependency_manager'] ?? null) ? $profile['dependency_manager'] : 'none';
+        $this->dependencyExclude = $profile['dependency_exclude'] ?? null;
         $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
@@ -1454,6 +1473,12 @@ final class ArchTools
      * archCoreGitPullFastForward draws around this host's git
      * credential).
      *
+     * FIX 2026-09-27: listDeclaredMigrations() can now throw a
+     * \RuntimeException when two migration files declare the same id
+     * (see that method's own docblock) -- caught here and turned into
+     * the same success:false shape every other failure in this class
+     * uses, rather than an uncaught exception reaching the HTTP layer.
+     *
      * @return array<string, mixed>
      */
     public function archCoreDbPendingMigrations(): array
@@ -1463,7 +1488,11 @@ final class ArchTools
             return ['success' => false, 'error' => 'this token has no core lane'];
         }
 
-        $declared = $this->listDeclaredMigrations($root);
+        try {
+            $declared = $this->listDeclaredMigrations($root);
+        } catch (\RuntimeException $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
 
         $pdo = $this->connectProjectDb($root);
         if (!$pdo instanceof \PDO) {
@@ -1644,6 +1673,128 @@ final class ArchTools
     }
 
     /**
+     * Materializes this project's vendored dependencies from its own already-committed lockfile —
+     * `composer install --no-dev` or `npm ci`, chosen by this profile's declared
+     * dependency_manager, never by a caller argument. Refuses outright if dependency_manager is
+     * 'none' (the default — nothing granted this yet), and refuses if the lockfile declares any
+     * package on dependency_exclude, naming the offending package(s) rather than running a partial
+     * or filtered install. No version resolution ever happens here: composer.lock/package-lock.json
+     * are read as-is, hash-pinned, exactly as a locked install always behaves — this method adds no
+     * network-reaching behaviour beyond what that lockfile already commits to.
+     *
+     * Added 2026-09-27 (Confluence 49840130: Proposal: Composer/PHP Dependency Support Across ARCH
+     * Projects). Takes no caller-supplied arguments -- same shape as archCoreDbApplyMigrations():
+     * the only variable is which profile is calling and what that project's own checked-in
+     * lockfile + this profile's exclude list say.
+     *
+     * @return array<string, mixed>
+     */
+    public function archDependencyInstall(): array
+    {
+        if ('none' === $this->dependencyManager) {
+            return ['success' => false, 'error' => 'this token has no dependency manager configured'];
+        }
+
+        $root = $this->laneRoot('core');
+        if (null === $root) {
+            return ['success' => false, 'error' => 'this token has no core lane'];
+        }
+
+        $lockPackages = $this->readLockedPackageNames($root, $this->dependencyManager);
+        if (null === $lockPackages) {
+            $lockfile = 'composer' === $this->dependencyManager ? 'composer.lock' : 'package-lock.json';
+
+            return ['success' => false, 'error' => "could not read/parse {$lockfile}"];
+        }
+
+        if (null !== $this->dependencyExclude) {
+            $excluded = array_values(array_intersect($lockPackages, $this->dependencyExclude));
+            if ([] !== $excluded) {
+                return [
+                    'success' => false,
+                    'error' => 'refusing to install — excluded package(s) present in lockfile: '.implode(', ', $excluded),
+                    'excluded_packages' => $excluded,
+                ];
+            }
+        }
+
+        $command = 'composer' === $this->dependencyManager
+            ? ['composer', 'install', '--no-dev', '--no-interaction']
+            : ['npm', 'ci', '--omit=dev'];
+
+        $descriptorSpec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $process = proc_open($command, $descriptorSpec, $pipes, $root);
+        if (!\is_resource($process)) {
+            return ['success' => false, 'error' => 'failed to spawn '.$command[0]];
+        }
+        $stdout = stream_get_contents($pipes[1]) ?: '';
+        $stderr = stream_get_contents($pipes[2]) ?: '';
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->logger->info('Dependency install run (gated).', [
+            'manager' => $this->dependencyManager,
+            'package_count' => \count($lockPackages),
+            'exit_code' => $exitCode,
+        ]);
+
+        return [
+            'success' => 0 === $exitCode,
+            'manager' => $this->dependencyManager,
+            'package_count' => \count($lockPackages),
+            'exit_code' => $exitCode,
+            'stdout' => $stdout,
+            'stderr' => $stderr,
+        ];
+    }
+
+    /**
+     * @return list<string>|null package names declared in the project's own lockfile, or null if
+     *                           the lockfile is missing/unparseable
+     */
+    private function readLockedPackageNames(string $root, string $manager): ?array
+    {
+        if ('composer' === $manager) {
+            $path = $root.'/composer.lock';
+            if (!is_file($path)) {
+                return null;
+            }
+            $decoded = json_decode((string) file_get_contents($path), true);
+            if (!\is_array($decoded)) {
+                return null;
+            }
+            $names = [];
+            foreach (array_merge($decoded['packages'] ?? [], $decoded['packages-dev'] ?? []) as $pkg) {
+                if (\is_array($pkg) && \is_string($pkg['name'] ?? null)) {
+                    $names[] = $pkg['name'];
+                }
+            }
+
+            return $names;
+        }
+
+        // npm
+        $path = $root.'/package-lock.json';
+        if (!is_file($path)) {
+            return null;
+        }
+        $decoded = json_decode((string) file_get_contents($path), true);
+        if (!\is_array($decoded)) {
+            return null;
+        }
+        $names = [];
+        foreach (($decoded['packages'] ?? []) as $pkgPath => $pkg) {
+            if ('' === $pkgPath || !\is_array($pkg) || !\is_string($pkg['name'] ?? null)) {
+                continue; // skip the root package entry (empty-string key)
+            }
+            $names[] = $pkg['name'];
+        }
+
+        return $names;
+    }
+
+    /**
      * Fill in a Portal project request from a completed bootstrap interview.
      *
      * Calls out to arch-portal's own inception-fill endpoint over HTTPS,
@@ -1755,7 +1906,22 @@ final class ArchTools
      * NNNN_ prefix precisely so this ordering is stable and explicit --
      * see db/migrations/README.md).
      *
+     * FIX 2026-09-27: a declared `-- id:` must be unique across every
+     * migration file in this directory. Previously, two files sharing an
+     * id both survived into the returned list with no warning, and
+     * archCoreDbPendingMigrations()'s applied-check
+     * (`in_array($id, $applied)`) then silently treated BOTH as applied
+     * the moment either one's id was recorded -- see the incident note in
+     * claude/proposal-arch-mcp-dependency-install-tool.md (ARCH-COLLAB
+     * project) for the incident this caused (a real, uncommitted-to-DB
+     * ALTER TABLE read as "already applied" and nearly shipped un-run).
+     * Now throws immediately, naming both colliding files, so this fails
+     * loudly at the read step instead of shadowing silently at the
+     * compare step.
+     *
      * @return list<array<string, mixed>>
+     *
+     * @throws \RuntimeException if two files declare the same id
      */
     private function listDeclaredMigrations(string $root): array
     {
@@ -1767,15 +1933,26 @@ final class ArchTools
         sort($files);
 
         $migrations = [];
+        $seenBy = []; // declared id => the file that first declared it
         foreach ($files as $file) {
             $content = file_get_contents($file);
             if (false === $content) {
                 continue;
             }
             $parsed = $this->parseMigrationFile($content);
-            if (null !== $parsed) {
-                $migrations[] = $parsed;
+            if (null === $parsed) {
+                continue;
             }
+            if (isset($seenBy[$parsed['id']])) {
+                throw new \RuntimeException(sprintf(
+                    "duplicate migration id '%s' declared in both %s and %s -- ids must be unique across every migration file, regardless of filename",
+                    $parsed['id'],
+                    basename($seenBy[$parsed['id']]),
+                    basename($file)
+                ));
+            }
+            $seenBy[$parsed['id']] = $file;
+            $migrations[] = $parsed;
         }
 
         return $migrations;
