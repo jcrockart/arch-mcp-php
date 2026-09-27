@@ -21,11 +21,13 @@ require_once dirname(__DIR__).'/vendor/autoload.php';
 // deploy. Harmless either way (require_once).
 require_once dirname(__DIR__).'/src/ArchProfiles.php';
 require_once dirname(__DIR__).'/src/OAuthBearer.php';
+require_once dirname(__DIR__).'/src/BreakglassAuth.php';
 require_once dirname(__DIR__).'/src/PortalProjectResolver.php';
 require_once dirname(__DIR__).'/src/ProjectsTools.php';
 
 use ArchMcp\ArchProfiles;
 use ArchMcp\ArchTools;
+use ArchMcp\BreakglassAuth;
 use ArchMcp\OAuthBearer;
 use ArchMcp\ProjectsTools;
 use Laminas\HttpHandlerRunner\Emitter\SapiEmitter;
@@ -155,6 +157,11 @@ if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/pr
 // legitimate clients. Still fails CLOSED either way — no header,
 // malformed token, bad signature, expired, wrong scope all collapse to
 // the same 401, and the raw token is never logged.
+//
+// This address NEVER passes $bypassFrameworkCarveOut=true to
+// PortalProjectResolver::resolve() — see /projects-token below for the
+// one address that does, and PortalProjectResolver's own docblock for
+// why that split exists.
 // ---------------------------------------------------------------------
 if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath)) {
     $claims = OAuthBearer::verifyRequest($_SERVER);
@@ -212,6 +219,118 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath
         ->addTool([ProjectsTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations')
         ->addTool([ProjectsTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations')
         ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
+        ->addTool([ProjectsTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row')
+        ->setCapabilities(new ServerCapabilities(
+            tools: true,
+            toolsListChanged: false,
+            resources: false,
+            resourcesSubscribe: false,
+            resourcesListChanged: false,
+            prompts: false,
+            promptsListChanged: false,
+            logging: false,
+            completions: false,
+        ));
+
+    $server = $builder->build();
+
+    $psr17 = new Psr17Factory();
+    $transport = new StreamableHttpTransport(
+        $psr17->createServerRequestFromGlobals(),
+        logger: $logger,
+    );
+
+    $response = $server->run($transport);
+
+    (new SapiEmitter())->emit($response);
+
+    exit;
+}
+
+// ---------------------------------------------------------------------
+// /projects-token — break-glass fallback, added 2026-09-28
+// (claude/proposal-framework-connector-consolidation.md). Same tool
+// surface as /projects above (same ProjectsTools class, same
+// PortalProjectResolver), but:
+//
+//   - authenticated via a single static bearer secret (BreakglassAuth,
+//     X-Api-Key header) instead of OAuth — this address must keep
+//     working even when Portal's own OAuth authorization-server code is
+//     what's broken, which is the entire reason it exists;
+//   - resolves to ONE fixed Portal user (whichever BREAKGLASS_PORTAL_
+//     USER_ID names — see BreakglassAuth), not a per-caller identity;
+//   - passes $bypassFrameworkCarveOut=true, the one and only place in
+//     this codebase that does — see PortalProjectResolver's own
+//     docblock for exactly what that unlocks and why.
+//
+// Same 404-not-401 fail-closed posture as the token-gate block below
+// (this is a static-secret address, not an OAuth-discoverable one, so
+// it should behave like ArchProfiles' addresses, not like /projects
+// above). Every successful call is logged at WARNING, not INFO — see
+// BreakglassAuth's own docblock for why: this path should stay rare
+// enough that every use is worth a human noticing afterward. The
+// server's own advertised name is deliberately unmistakable
+// ("arch-mcp (BREAK-GLASS)") so a connected client can never confuse
+// this for the ordinary /projects connector at a glance, and every tool
+// call still requires its own explicit `slug` — there is no
+// "current project" implied by this address, on purpose.
+// ---------------------------------------------------------------------
+if (\is_string($requestPath) && 1 === preg_match('#^/projects-token/?$#', $requestPath)) {
+    $portalUserId = BreakglassAuth::verifyRequest($_SERVER);
+
+    if (null === $portalUserId) {
+        $logger->warning('Rejected /projects-token MCP request', ['via' => 'breakglass-token']);
+        http_response_code(404);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'not_found']);
+        exit;
+    }
+
+    $logger->warning('BREAK-GLASS /projects-token request authorised', ['portal_user_id' => $portalUserId]);
+
+    $container = new Container();
+    $container->set(LoggerInterface::class, $logger);
+    $container->set(ProjectsTools::class, new ProjectsTools($logger, $portalUserId, bypassFrameworkCarveOut: true));
+
+    // Deliberately its OWN session directory, distinct from /projects'
+    // per-user partitioning above — this is a single fixed identity, not
+    // "whichever Portal user authenticated", so partitioning by that
+    // identity alone (not by request) is correct and sufficient.
+    $sessionDir = dirname(__DIR__).'/var/sessions/projects-token-'.hash('sha256', $portalUserId);
+
+    $builder = Server::builder()
+        ->setServerInfo('arch-mcp (BREAK-GLASS)', '0.3.0')
+        ->setLogger($logger)
+        ->setContainer($container)
+        ->setSession(new FileSessionStore($sessionDir))
+        ->addTool([ProjectsTools::class, 'archSessionStart'], 'arch_session_start')
+        ->addTool([ProjectsTools::class, 'archCodegenPreview'], 'arch_codegen_preview')
+        ->addTool([ProjectsTools::class, 'archSessionCommit'], 'arch_session_commit')
+        ->addTool([ProjectsTools::class, 'archSessionDiscard'], 'arch_session_discard')
+        ->addTool([ProjectsTools::class, 'archSessionStatus'], 'arch_session_status')
+        ->addTool([ProjectsTools::class, 'archSessionWriteFile'], 'arch_session_write_file')
+        ->addTool([ProjectsTools::class, 'archSessionReadFile'], 'arch_session_read_file')
+        ->addTool([ProjectsTools::class, 'archSessionListFiles'], 'arch_session_list_files')
+        ->addTool([ProjectsTools::class, 'archCodeWriteFile'], 'arch_code_write_file')
+        ->addTool([ProjectsTools::class, 'archCodeReadFile'], 'arch_code_read_file')
+        ->addTool([ProjectsTools::class, 'archCodeListFiles'], 'arch_code_list_files')
+        ->addTool([ProjectsTools::class, 'archSiteWriteFile'], 'arch_site_write_file')
+        ->addTool([ProjectsTools::class, 'archSiteReadFile'], 'arch_site_read_file')
+        ->addTool([ProjectsTools::class, 'archSiteListFiles'], 'arch_site_list_files')
+        ->addTool([ProjectsTools::class, 'archAssetsWriteFile'], 'arch_assets_write_file')
+        ->addTool([ProjectsTools::class, 'archAssetsReadFile'], 'arch_assets_read_file')
+        ->addTool([ProjectsTools::class, 'archAssetsListFiles'], 'arch_assets_list_files')
+        ->addTool([ProjectsTools::class, 'archCoreGitStatus'], 'arch_core_git_status')
+        ->addTool([ProjectsTools::class, 'archCoreGitDiff'], 'arch_core_git_diff')
+        ->addTool([ProjectsTools::class, 'archCoreGitLog'], 'arch_core_git_log')
+        ->addTool([ProjectsTools::class, 'archCoreGitShow'], 'arch_core_git_show')
+        ->addTool([ProjectsTools::class, 'archCoreGitFetch'], 'arch_core_git_fetch')
+        ->addTool([ProjectsTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull')
+        ->addTool([ProjectsTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push')
+        ->addTool([ProjectsTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations')
+        ->addTool([ProjectsTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations')
+        ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
+        ->addTool([ProjectsTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row')
         ->setCapabilities(new ServerCapabilities(
             tools: true,
             toolsListChanged: false,

@@ -5,8 +5,9 @@ namespace ArchMcp;
 use Psr\Log\LoggerInterface;
 
 /**
- * Tool implementations for the /projects address (Slice 2 of
- * claude/proposal-arch-mcp-oauth-projects-connector.md).
+ * Tool implementations for the /projects and /projects-token addresses
+ * (Slice 2 of claude/proposal-arch-mcp-oauth-projects-connector.md,
+ * extended by claude/proposal-framework-connector-consolidation.md).
  *
  * Every method here mirrors one of ArchTools.php's own tool methods,
  * with a required `slug` parameter added in front. ArchTools.php itself
@@ -30,33 +31,45 @@ use Psr\Log\LoggerInterface;
  * tool invoked directly by name still fails closed. `session_tools` is
  * the ONE exception: grep ArchTools.php and it is never read there at
  * all — today, the advertised-list filter in index.php IS the entire
- * enforcement for that flag. /projects has no meaningful advertised-list
- * filter to begin with (eligibility depends on which slug a given call
- * names, decided per call, not per HTTP request — see below), so if this
- * class didn't add its own check, a project with session_tools=false
- * would be fully able to drive its session/codegen tools through this
- * address even though the same profile can't reach them through
- * /project/<name>. requireSessionTools() below is that missing runtime
- * backstop, added here specifically because /projects is the first
- * place this gap would actually be reachable.
+ * enforcement for that flag. /projects and /projects-token have no
+ * meaningful advertised-list filter to begin with (eligibility depends
+ * on which slug a given call names, decided per call, not per HTTP
+ * request — see below), so if this class didn't add its own check, a
+ * project with session_tools=false would be fully able to drive its
+ * session/codegen tools through this address even though the same
+ * profile can't reach them through /project/<name>. requireSessionTools()
+ * below is that missing runtime backstop, added here specifically
+ * because these addresses are the first place this gap would actually
+ * be reachable.
  *
- * WHY EVERY TOOL IS UNCONDITIONALLY REGISTERED for this address (see
- * public/index.php's /projects branch): the two-layer model elsewhere in
- * this codebase — "the advertised list is a filter, the runtime check is
- * the backstop, both required" — assumes the profile, and therefore what
- * to advertise, is known at request start. For /projects it isn't: the
- * bearer token authenticates a PORTAL USER, and which project (and thus
- * which lanes/flags) a call concerns is only known once that call names
- * a slug. So for this one address the runtime check carries the full
- * weight alone, for every flag — which is exactly why
- * requireSessionTools() below exists rather than being skipped as
- * redundant.
+ * WHY EVERY TOOL IS UNCONDITIONALLY REGISTERED for these addresses (see
+ * public/index.php's /projects and /projects-token branches): the
+ * two-layer model elsewhere in this codebase — "the advertised list is a
+ * filter, the runtime check is the backstop, both required" — assumes
+ * the profile, and therefore what to advertise, is known at request
+ * start. Here it isn't: the bearer credential authenticates a PORTAL
+ * USER (or, on /projects-token, one fixed break-glass identity), and
+ * which project (and thus which lanes/flags) a call concerns is only
+ * known once that call names a slug. So for these addresses the runtime
+ * check carries the full weight alone, for every flag — which is
+ * exactly why requireSessionTools() below exists rather than being
+ * skipped as redundant.
+ *
+ * BREAK-GLASS, added 2026-09-28 (claude/proposal-framework-connector-
+ * consolidation.md): $bypassFrameworkCarveOut, threaded through to every
+ * PortalProjectResolver::resolve() call below, defaults false (the OAuth
+ * /projects address's behaviour, unchanged). public/index.php's
+ * /projects-token block is the ONLY caller that constructs this class
+ * with it set true — see PortalProjectResolver's own docblock for why
+ * that bypass has to exist, and BreakglassAuth for how that address
+ * authenticates independently of Portal's OAuth code.
  */
 final class ProjectsTools
 {
     public function __construct(
         private readonly LoggerInterface $logger,
         private readonly string $portalUserId,
+        private readonly bool $bypassFrameworkCarveOut = false,
     ) {
     }
 
@@ -69,7 +82,7 @@ final class ProjectsTools
      */
     private function forSlugProcess(string $slug): ArchTools|array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->bypassFrameworkCarveOut);
         if (null === $profile) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -85,7 +98,7 @@ final class ProjectsTools
      */
     private function forSlugFile(string $slug): ArchTools|array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->bypassFrameworkCarveOut);
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -102,7 +115,7 @@ final class ProjectsTools
      */
     private function requireSessionTools(string $slug, ArchTools $tools): ?array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->bypassFrameworkCarveOut);
         if (null === $profile || !$profile['session_tools']) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this project's profile does not grant session tools"];
         }
