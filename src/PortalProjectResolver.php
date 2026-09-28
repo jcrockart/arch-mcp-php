@@ -3,14 +3,14 @@
 namespace ArchMcp;
 
 /**
- * Per-call profile resolution for the /projects and /projects-token
- * addresses (Slice 2 of claude/proposal-arch-mcp-oauth-projects-
- * connector.md, extended by claude/proposal-framework-connector-
- * consolidation.md).
+ * Per-call profile resolution for the /projects, /projects-staging, and
+ * /projects-token addresses (Slice 2 of claude/proposal-arch-mcp-oauth-
+ * projects-connector.md, extended by claude/proposal-framework-connector-
+ * consolidation.md and claude/proposal-arch-mcp-projects-staging-split.md).
  *
  * Every other address this server serves resolves its ONE profile once,
  * at request start, from a local, host-only file (ArchProfiles.php).
- * These two addresses are different by design: one bearer credential
+ * These addresses are different by design: one bearer credential
  * authenticates a Portal USER (OAuth) or a fixed break-glass identity
  * (static token) rather than a single project, and each tool call names
  * which project it wants via a `slug` argument — so the profile has to
@@ -27,32 +27,51 @@ namespace ArchMcp;
  * does not own (Portal's), scoped as tightly as MySQL grants allow:
  * SELECT only, on exactly `projects`, `project_members`,
  * `project_profiles` — never anything wider, never a write grant. See
- * this class's own PORTAL_DB_* deployment note and the Slice 2
+ * this class's own PORTAL_DB_CONFIG_PATH deployment note and the Slice 2
  * build-log entry in the proposal doc for the exact GRANT statement
  * used.
  *
+ * TWO DATABASES, added 2026-09-28 (claude/proposal-arch-mcp-projects-
+ * staging-split.md): this class used to hold ONE standing connection,
+ * to whichever single Portal database PORTAL_DB_CONFIG_PATH's
+ * PORTAL_DB_ENVIRONMENT constant named — found, live, to be hardcoded to
+ * 'staging' since this address launched, meaning every /projects call
+ * ever made (including through production's own service-OAuth
+ * credential) silently resolved against STAGING Portal's project
+ * registry, never production's. Now holds up to two standing
+ * connections, one per environment, read from a JSON manifest instead of
+ * PHP constants (same shape choice as OAuthBearer::TRUSTED_ISSUERS_PATH),
+ * and every call site MUST name which one it wants — there is no default
+ * environment any more, deliberately, so this class can never again
+ * silently serve the wrong database when a caller asked for the other
+ * one. See public/index.php: /projects always resolves with
+ * 'production', /projects-staging always with 'staging', /projects-token
+ * (break-glass) always with 'production' (decided 2026-09-28 — its whole
+ * reason to exist is reaching production when OAuth is broken).
+ *
  * Same fail-closed discipline as every other resolver in this codebase:
- * unreadable config, a DB error, no matching row (project doesn't
- * exist, has no profile for this environment, or the caller isn't a
- * member — deliberately indistinguishable, same reasoning as
- * ArchProfiles' own 404-not-403 posture), or a root that doesn't exist
- * on disk all resolve to null.
+ * unreadable config, an unknown/missing environment, a DB error, no
+ * matching row (project doesn't exist, has no profile for this
+ * environment, or the caller isn't a member — deliberately
+ * indistinguishable, same reasoning as ArchProfiles' own 404-not-403
+ * posture), or a root that doesn't exist on disk all resolve to null.
  *
  * FRAMEWORK CARVE-OUT, built in here from the start (not retrofitted,
  * per the instruction that opened this slice): a project whose
  * `category` is 'framework' (arch-core, arch-mcp, arch-portal,
  * arch-bootstrap) NEVER gets session_tools or push_allowed through the
- * OAuth /projects path, no matter what project_profiles/project_members
- * says. This is enforced as an explicit, hardcoded override below — not
- * a WHERE clause a future query change could accidentally drop, and not
- * something the data model prevents on its own. A framework project
- * remains reachable here for pull/read access (an owner may still want
- * to inspect it), but never for the two capabilities that could let an
- * untrusted or lower-trust caller push code into, or run arbitrary
- * session/codegen tooling against, the very framework this server and
- * Portal are built from. EXTENDED 2026-09-27 (Confluence 49840130) to
- * also deny a locked dependency install (archDependencyInstall) for the
- * same reason — see the override below.
+ * OAuth /projects or /projects-staging paths, no matter what
+ * project_profiles/project_members says. This is enforced as an
+ * explicit, hardcoded override below — not a WHERE clause a future
+ * query change could accidentally drop, and not something the data
+ * model prevents on its own. A framework project remains reachable here
+ * for pull/read access (an owner may still want to inspect it), but
+ * never for the two capabilities that could let an untrusted or
+ * lower-trust caller push code into, or run arbitrary session/codegen
+ * tooling against, the very framework this server and Portal are built
+ * from. EXTENDED 2026-09-27 (Confluence 49840130) to also deny a locked
+ * dependency install (archDependencyInstall) for the same reason — see
+ * the override below.
  *
  * EXTENDED 2026-09-27 (claude/proposal-framework-connector-consolidation.md,
  * slice 1): bootstrap_fill_allowed/bootstrap_fill_portal_url are now real
@@ -71,41 +90,51 @@ namespace ArchMcp;
  * carve-out entirely. The ONLY caller allowed to pass true is
  * public/index.php's /projects-token block (BreakglassAuth-gated, a
  * static secret independent of Portal's OAuth code) — see that address's
- * own docblock for why this bypass has to exist at all. The OAuth
- * /projects address must NEVER pass true here; doing so would silently
- * hand every OAuth-authenticated Portal user push/session access to this
- * server's and Portal's own source code, defeating the entire point of
- * the carve-out. There is no flag on project_profiles or anywhere in the
- * database that can turn this on — it is exclusively a call-site decision
- * made once, in one file, by one address.
+ * own docblock for why this bypass has to exist at all. Neither OAuth
+ * address (/projects, /projects-staging) must EVER pass true here; doing
+ * so would silently hand every OAuth-authenticated Portal user push/
+ * session access to this server's and Portal's own source code, defeating
+ * the entire point of the carve-out. There is no flag on project_profiles
+ * or anywhere in the database that can turn this on — it is exclusively a
+ * call-site decision made once, in one file, by one address.
  */
 final class PortalProjectResolver
 {
     /**
-     * Deployment-time connection config for Portal's database — a
-     * dedicated, read-only MySQL grant, never Portal's own app
+     * Deployment-time connection config for BOTH Portal databases — two
+     * dedicated, read-only MySQL grants, never Portal's own app
      * credential. Same secrets-directory convention as
-     * ArchProfiles::MAP_PATH/PROFILES_PATH: outside git, outside the web
-     * root. EDIT THIS on deployment; staging and production each get
-     * their own file pointing at their own Portal database — never
-     * point arch-mcp-staging at production's database or vice versa.
+     * ArchProfiles::MAP_PATH/PROFILES_PATH and
+     * OAuthBearer::TRUSTED_ISSUERS_PATH: outside git, outside the web
+     * root, a JSON manifest rather than PHP constants specifically so one
+     * file can hold both environments' credentials at once (this server
+     * has only one checkout serving both — see PROJECT-CONTEXT.md's
+     * "Checkout topology" note). EDIT THIS on deployment.
      *
      * Expected content:
-     *   <?php
-     *   define('PORTAL_DB_HOST', 'localhost');
-     *   define('PORTAL_DB_NAME', 'crockart_archportal_staging');
-     *   define('PORTAL_DB_USER', '...');   // dedicated read-only grant
-     *   define('PORTAL_DB_PASS', '...');
-     *   define('PORTAL_DB_ENVIRONMENT', 'staging'); // or 'production'
+     *   {
+     *     "staging": {"host": "localhost", "name": "crockart_archportal_staging", "user": "...", "pass": "..."},
+     *     "production": {"host": "localhost", "name": "crockart_archportal", "user": "...", "pass": "..."}
+     *   }
+     *
+     * Superseded, 2026-09-28: the old single-environment portal-db.php
+     * (PORTAL_DB_HOST/NAME/USER/PASS/ENVIRONMENT constants). That file is
+     * no longer read by this class at all — see this class's top
+     * docblock, "TWO DATABASES".
      */
-    private const CONFIG_PATH = '/home/crockart/arch-mcp-secrets/portal-db.php';
+    private const CONFIG_PATH = '/home/crockart/arch-mcp-secrets/portal-db.json';
 
-    private static ?\PDO $pdo = null;
+    /** @var array<string, \PDO> keyed by environment */
+    private static array $pdoByEnvironment = [];
 
     /**
+     * @param 'staging'|'production' $environment which Portal database to query — no default, every
+     *                                             caller must say which one it means (see this class's
+     *                                             top docblock, "TWO DATABASES")
+     *
      * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
-    public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, bool $bypassFrameworkCarveOut = false): ?array
+    public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, string $environment, bool $bypassFrameworkCarveOut = false): ?array
     {
         if (1 !== preg_match('/^[0-9]+$/', $portalUserId)) {
             return null;
@@ -117,16 +146,14 @@ final class PortalProjectResolver
         if (1 !== preg_match('/^[a-z0-9][a-z0-9._-]*$/i', $slug)) {
             return null;
         }
+        if (!\in_array($environment, ['staging', 'production'], true)) {
+            $logger->error('PortalProjectResolver: unknown environment requested', ['environment' => $environment]);
 
-        $pdo = self::connect($logger);
-        if (null === $pdo) {
             return null;
         }
 
-        $environment = \defined('PORTAL_DB_ENVIRONMENT') ? \PORTAL_DB_ENVIRONMENT : null;
-        if (!\is_string($environment) || !\in_array($environment, ['staging', 'production'], true)) {
-            $logger->error('PortalProjectResolver: PORTAL_DB_ENVIRONMENT missing or invalid');
-
+        $pdo = self::connect($environment, $logger);
+        if (null === $pdo) {
             return null;
         }
 
@@ -259,11 +286,11 @@ final class PortalProjectResolver
         // FRAMEWORK CARVE-OUT — see this class's top docblock. Applied
         // here, unconditionally, after every other field has already
         // been read from the row: a framework project never grants
-        // session_tools or push through the OAuth /projects address,
-        // regardless of what project_profiles says. Pull/read access is
-        // unaffected. Skipped ENTIRELY when $bypassFrameworkCarveOut is
-        // true — see this class's top docblock ("EXTENDED 2026-09-28")
-        // for the one caller allowed to pass that.
+        // session_tools or push through an OAuth address, regardless of
+        // what project_profiles says. Pull/read access is unaffected.
+        // Skipped ENTIRELY when $bypassFrameworkCarveOut is true — see
+        // this class's top docblock ("EXTENDED 2026-09-28") for the one
+        // caller allowed to pass that.
         //
         // DECIDED 2026-09-27, alongside archDependencyInstall (Confluence
         // 49840130): extended to also deny a locked dependency install for
@@ -326,10 +353,13 @@ final class PortalProjectResolver
         return (bool) $raw;
     }
 
-    private static function connect(\Psr\Log\LoggerInterface $logger): ?\PDO
+    /**
+     * @param 'staging'|'production' $environment
+     */
+    private static function connect(string $environment, \Psr\Log\LoggerInterface $logger): ?\PDO
     {
-        if (null !== self::$pdo) {
-            return self::$pdo;
+        if (isset(self::$pdoByEnvironment[$environment])) {
+            return self::$pdoByEnvironment[$environment];
         }
 
         if (!\is_file(self::CONFIG_PATH)) {
@@ -338,19 +368,26 @@ final class PortalProjectResolver
             return null;
         }
 
-        require_once self::CONFIG_PATH;
+        $raw = @file_get_contents(self::CONFIG_PATH);
+        $manifest = \is_string($raw) ? json_decode($raw, true) : null;
+        if (!\is_array($manifest)) {
+            $logger->error('PortalProjectResolver: portal-db.json missing or malformed');
 
-        if (!\defined('PORTAL_DB_HOST') || !\defined('PORTAL_DB_NAME') || !\defined('PORTAL_DB_USER') || !\defined('PORTAL_DB_PASS')) {
-            $logger->error('PortalProjectResolver: portal-db.php missing required constants');
+            return null;
+        }
+
+        $entry = $manifest[$environment] ?? null;
+        if (!\is_array($entry) || !isset($entry['host'], $entry['name'], $entry['user'], $entry['pass'])) {
+            $logger->error('PortalProjectResolver: portal-db.json has no valid entry for environment', ['environment' => $environment]);
 
             return null;
         }
 
         try {
-            self::$pdo = new \PDO(
-                sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', \PORTAL_DB_HOST, \PORTAL_DB_NAME),
-                \PORTAL_DB_USER,
-                \PORTAL_DB_PASS,
+            $pdo = new \PDO(
+                sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', (string) $entry['host'], (string) $entry['name']),
+                (string) $entry['user'],
+                (string) $entry['pass'],
                 [
                     \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
                     \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
@@ -358,11 +395,11 @@ final class PortalProjectResolver
                 ]
             );
         } catch (\PDOException $e) {
-            $logger->error('PortalProjectResolver: connection failed', ['exception' => $e->getMessage()]);
+            $logger->error('PortalProjectResolver: connection failed', ['environment' => $environment, 'exception' => $e->getMessage()]);
 
             return null;
         }
 
-        return self::$pdo;
+        return self::$pdoByEnvironment[$environment] = $pdo;
     }
 }

@@ -78,122 +78,24 @@ $logger = archMcpLogger();
 // never written as a literal here.
 $requestScheme = (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS']) ? 'https' : 'http';
 $requestHost = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
-$resourceMetadataUrl = $requestScheme.'://'.$requestHost.'/oauth-protected-resource/projects';
 
-// ---------------------------------------------------------------------
-// /oauth-protected-resource/projects — RFC 9728 protected-resource
-// metadata for the OAuth-gated /projects address below. A client that
-// gets refused there is expected to fetch exactly the URL named in that
-// refusal's WWW-Authenticate header (below) to learn how to get a
-// token; this is that document.
-//
-// Served at a NON-standard path — NOT /.well-known/oauth-protected-
-// resource/projects, the RFC's conventional location — because
-// public/.htaccess's routing whitelist deliberately refuses any path
-// segment starting with a dot (documented anti-traversal hardening: "a
-// path segment may not begin with a dot"). Carving a dot-segment
-// exception into that rule is a change to host-specific deployment
-// config outside this git-tracked code lane, and a call for James, not
-// this script — flagged to him alongside this change. RFC 9728 doesn't
-// require the well-known convention path; a client is meant to fetch
-// whatever URL the header actually gives it, so this route is
-// spec-compliant, just not at the conventional location. .htaccess
-// still needs ONE new RewriteRule added (matching the existing pattern
-// already used for ^projects/?$ etc.) before this route is reachable at
-// all — that part is not done as of this commit.
-//
-// Deliberately unauthenticated: RFC 9728 protected-resource metadata
-// must be publicly fetchable, unlike every other address in this file.
-//
-// UPDATED 2026-09-28: `authorization_servers` now lists EVERY issuer
-// OAuthBearer trusts (see that class's multi-issuer-trust docblock),
-// not just one — RFC 9728 defines this field as a list precisely to
-// let a resource server accept tokens from more than one AS.
-// ---------------------------------------------------------------------
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
-if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/projects/?$#', $requestPath)) {
-    $issuers = OAuthBearer::trustedIssuerUrls();
 
-    if ([] === $issuers) {
-        // Deploy-time misconfiguration (missing/empty/malformed
-        // TRUSTED_ISSUERS_PATH file) — never advertise an empty
-        // authorization_servers list, fail loudly instead so this is
-        // noticed rather than silently breaking discovery.
-        $logger->critical('OAuthBearer::trustedIssuerUrls() empty — cannot serve protected-resource metadata');
-        http_response_code(500);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'internal_error']);
-        exit;
-    }
-
-    header('Content-Type: application/json');
-    echo json_encode([
-        'resource' => $requestScheme.'://'.$requestHost.'/projects',
-        'authorization_servers' => $issuers,
-    ]);
-    exit;
-}
-
-// ---------------------------------------------------------------------
-// /projects — Slice 2 of claude/proposal-arch-mcp-oauth-projects-
-// connector.md. A DIFFERENT address, a DIFFERENT authentication
-// mechanism, checked BEFORE the token-gate block below rather than
-// folded into it: every other address authenticates a single token
-// that names ITS OWN profile up front (X-Api-Key, ArchProfiles.php);
-// this one authenticates a Portal USER via a short-lived OAuth bearer
-// JWT (Authorization header, OAuthBearer.php), and which project a
-// call concerns is only known once that call supplies a `slug`
-// argument — see ProjectsTools.php's own docblock for why that changes
-// the tool-registration shape below (everything unconditional; the
-// runtime check inside ProjectsTools/PortalProjectResolver carries the
-// full weight, not an advertised-list filter).
-//
-// UNLIKE the token gate below, an unauthenticated call here gets 401 +
-// WWW-Authenticate, not a bare 404. Reviewed with James 2026-09-21 (see
-// the proposal doc): the token gate's 404-not-401/403 posture exists so
-// an unauthenticated caller can't distinguish "wrong token" from
-// "nothing here" — but /projects is meant to be discovered and driven
-// through the standard OAuth client flow (claude.ai's own connector
-// registration, among others), which requires a real 401 carrying
-// resource_metadata per RFC 9728/the MCP authorization spec. A bare 404
-// here doesn't hide anything a determined caller couldn't already tell
-// from the existence of this address in the proposal doc and the
-// broader MCP OAuth discovery convention; it only broke discovery for
-// legitimate clients. Still fails CLOSED either way — no header,
-// malformed token, bad signature, expired, wrong scope all collapse to
-// the same 401, and the raw token is never logged.
-//
-// This address NEVER passes $bypassFrameworkCarveOut=true to
-// PortalProjectResolver::resolve() — see /projects-token below for the
-// one address that does, and PortalProjectResolver's own docblock for
-// why that split exists.
-// ---------------------------------------------------------------------
-if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath)) {
-    $claims = OAuthBearer::verifyRequest($_SERVER);
-
-    if (null === $claims) {
-        $logger->warning('Rejected /projects MCP request', ['via' => 'oauth-bearer']);
-        http_response_code(401);
-        header('Content-Type: application/json');
-        header('WWW-Authenticate: Bearer resource_metadata="'.$resourceMetadataUrl.'"');
-        echo json_encode(['error' => 'unauthorized']);
-        exit;
-    }
-
-    $portalUserId = $claims['sub'];
-    $logger->info('MCP /projects request authorised', ['portal_user_id' => $portalUserId]);
-
+/**
+ * Shared tool set for /projects, /projects-staging, and /projects-token —
+ * identical tool list, differing only in which ProjectsTools instance
+ * (and thus which environment/bypass) the container is given. Pulled out
+ * once, 2026-09-28, when the staging/production split added a third
+ * near-identical route block, to stop this list drifting between them.
+ */
+function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tools, string $serverName, string $sessionDir): Server
+{
     $container = new Container();
     $container->set(LoggerInterface::class, $logger);
-    $container->set(ProjectsTools::class, new ProjectsTools($logger, $portalUserId));
+    $container->set(ProjectsTools::class, $tools);
 
-    // Partitioned per Portal user, same isolation principle as the
-    // per-address partitioning below — one authenticated user's MCP
-    // session state must never be visible to another.
-    $sessionDir = dirname(__DIR__).'/var/sessions/projects-'.hash('sha256', $portalUserId);
-
-    $builder = Server::builder()
-        ->setServerInfo('arch-mcp (projects)', '0.3.0')
+    return Server::builder()
+        ->setServerInfo($serverName, '0.3.0')
         ->setLogger($logger)
         ->setContainer($container)
         ->setSession(new FileSessionStore($sessionDir))
@@ -235,10 +137,12 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath
             promptsListChanged: false,
             logging: false,
             completions: false,
-        ));
+        ))
+        ->build();
+}
 
-    $server = $builder->build();
-
+function archMcpRunAndEmit(Server $server, LoggerInterface $logger): never
+{
     $psr17 = new Psr17Factory();
     $transport = new StreamableHttpTransport(
         $psr17->createServerRequestFromGlobals(),
@@ -250,6 +154,169 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath
     (new SapiEmitter())->emit($response);
 
     exit;
+}
+
+/**
+ * Serves one environment's RFC 9728 protected-resource metadata document
+ * — factored out 2026-09-28 when the staging/production split gave
+ * /projects a genuine staging twin, each needing its own metadata route
+ * (they no longer share one authorization-server list). `resource` is
+ * always this host's OWN address (not the environment's Portal host —
+ * this document describes what /projects{,-staging} itself is, RFC
+ * 9728's `resource` field), while `authorization_servers` is scoped to
+ * ONLY the issuer trusted for $environment, never both.
+ *
+ * @param 'staging'|'production' $environment
+ */
+function archMcpServeProtectedResourceMetadata(string $environment, string $resourcePath, string $requestScheme, string $requestHost, LoggerInterface $logger): never
+{
+    $issuers = OAuthBearer::trustedIssuerUrlsForEnvironment($environment);
+
+    if ([] === $issuers) {
+        // Deploy-time misconfiguration (missing/empty/malformed
+        // TRUSTED_ISSUERS_PATH file, or no entry for this environment) —
+        // never advertise an empty authorization_servers list, fail
+        // loudly instead so this is noticed rather than silently
+        // breaking discovery.
+        $logger->critical('OAuthBearer::trustedIssuerUrlsForEnvironment() empty — cannot serve protected-resource metadata', ['environment' => $environment]);
+        http_response_code(500);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'internal_error']);
+        exit;
+    }
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'resource' => $requestScheme.'://'.$requestHost.$resourcePath,
+        'authorization_servers' => $issuers,
+    ]);
+    exit;
+}
+
+// ---------------------------------------------------------------------
+// /oauth-protected-resource/projects and /oauth-protected-resource/
+// projects-staging — RFC 9728 protected-resource metadata for the two
+// OAuth-gated addresses below. A client refused at either address is
+// expected to fetch exactly the URL named in that refusal's
+// WWW-Authenticate header to learn how to get a token; these are those
+// documents, ONE PER ENVIRONMENT since 2026-09-28 (see
+// claude/proposal-arch-mcp-projects-staging-split.md) — production's
+// document advertises only production Portal as a trusted authorization
+// server, staging's only staging Portal, never both from either.
+//
+// Served at NON-standard paths — NOT /.well-known/oauth-protected-
+// resource/... , the RFC's conventional location — because
+// public/.htaccess's routing whitelist deliberately refuses any path
+// segment starting with a dot (documented anti-traversal hardening: "a
+// path segment may not begin with a dot"). Carving a dot-segment
+// exception into that rule is a change to host-specific deployment
+// config outside this git-tracked code lane, and a call for James, not
+// this script — flagged to him alongside this change. RFC 9728 doesn't
+// require the well-known convention path; a client is meant to fetch
+// whatever URL the header actually gives it, so this route is
+// spec-compliant, just not at the conventional location. .htaccess still
+// needs RewriteRules added (matching the existing pattern already used
+// for ^projects/?$ etc.) before these routes are reachable at all — not
+// done as of this commit.
+//
+// Deliberately unauthenticated: RFC 9728 protected-resource metadata
+// must be publicly fetchable, unlike every other address in this file.
+// ---------------------------------------------------------------------
+if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/projects/?$#', $requestPath)) {
+    archMcpServeProtectedResourceMetadata('production', '/projects', $requestScheme, $requestHost, $logger);
+}
+if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/projects-staging/?$#', $requestPath)) {
+    archMcpServeProtectedResourceMetadata('staging', '/projects-staging', $requestScheme, $requestHost, $logger);
+}
+
+// ---------------------------------------------------------------------
+// /projects and /projects-staging — Slice 2 of claude/proposal-arch-mcp-
+// oauth-projects-connector.md, split into two environment-bound
+// addresses 2026-09-28 (claude/proposal-arch-mcp-projects-staging-
+// split.md). A DIFFERENT address family, a DIFFERENT authentication
+// mechanism, checked BEFORE the token-gate block below rather than
+// folded into it: every other address authenticates a single token
+// that names ITS OWN profile up front (X-Api-Key, ArchProfiles.php);
+// these authenticate a Portal USER via a short-lived OAuth bearer JWT
+// (Authorization header, OAuthBearer.php), and which project a call
+// concerns is only known once that call supplies a `slug` argument —
+// see ProjectsTools.php's own docblock for why that changes the
+// tool-registration shape below (everything unconditional; the runtime
+// check inside ProjectsTools/PortalProjectResolver carries the full
+// weight, not an advertised-list filter).
+//
+// SPLIT, added 2026-09-28: found live that this single address, before
+// the split, always resolved against STAGING Portal's database
+// regardless of which environment's OAuth token authenticated the call
+// — meaning production's own service-OAuth credential (arch-portal's
+// Promote automation) was silently reading staging's project registry.
+// Now /projects accepts ONLY production-issued tokens and always queries
+// PRODUCTION Portal's database; /projects-staging accepts ONLY
+// staging-issued tokens and always queries STAGING Portal's database.
+// OAuthBearer::verifyRequest()'s own $requiredEnvironment argument is
+// what enforces the token side of this; PortalProjectResolver's
+// per-environment connection is what enforces the database side. See
+// both classes' own docblocks.
+//
+// UNLIKE the token gate below, an unauthenticated (or wrong-environment)
+// call here gets 401 + WWW-Authenticate, not a bare 404. Reviewed with
+// James 2026-09-21 (see the original proposal doc): the token gate's
+// 404-not-401/403 posture exists so an unauthenticated caller can't
+// distinguish "wrong token" from "nothing here" — but /projects is meant
+// to be discovered and driven through the standard OAuth client flow
+// (claude.ai's own connector registration, among others), which requires
+// a real 401 carrying resource_metadata per RFC 9728/the MCP
+// authorization spec. A bare 404 here doesn't hide anything a determined
+// caller couldn't already tell from the existence of this address in the
+// proposal docs and the broader MCP OAuth discovery convention; it only
+// broke discovery for legitimate clients. Still fails CLOSED either way
+// — no header, malformed token, bad signature, expired, wrong scope, or
+// (new) an otherwise-valid token from the OTHER environment all collapse
+// to the same 401, and the raw token is never logged.
+//
+// Neither of these addresses ever passes $bypassFrameworkCarveOut=true to
+// PortalProjectResolver::resolve() — see /projects-token below for the
+// one address that does, and PortalProjectResolver's own docblock for
+// why that split exists.
+// ---------------------------------------------------------------------
+foreach ([
+    ['path' => '#^/projects/?$#', 'environment' => 'production', 'resourceMetadataPath' => '/oauth-protected-resource/projects', 'serverName' => 'arch-mcp (projects)'],
+    ['path' => '#^/projects-staging/?$#', 'environment' => 'staging', 'resourceMetadataPath' => '/oauth-protected-resource/projects-staging', 'serverName' => 'arch-mcp (projects-staging)'],
+] as $route) {
+    if (!\is_string($requestPath) || 1 !== preg_match($route['path'], $requestPath)) {
+        continue;
+    }
+
+    $environment = $route['environment'];
+    $resourceMetadataUrl = $requestScheme.'://'.$requestHost.$route['resourceMetadataPath'];
+
+    $claims = OAuthBearer::verifyRequest($_SERVER, $environment);
+
+    if (null === $claims) {
+        $logger->warning('Rejected MCP request', ['via' => 'oauth-bearer', 'environment' => $environment]);
+        http_response_code(401);
+        header('Content-Type: application/json');
+        header('WWW-Authenticate: Bearer resource_metadata="'.$resourceMetadataUrl.'"');
+        echo json_encode(['error' => 'unauthorized']);
+        exit;
+    }
+
+    $portalUserId = $claims['sub'];
+    $logger->info('MCP request authorised', ['address' => $environment, 'via' => 'oauth-bearer', 'portal_user_id' => $portalUserId]);
+
+    $tools = new ProjectsTools($logger, $portalUserId, $environment);
+
+    // Partitioned per Portal user AND per environment, same isolation
+    // principle as the per-address partitioning below — one
+    // authenticated user's MCP session state must never be visible to
+    // another, and a staging session must never collide with that same
+    // user's production one.
+    $sessionDir = dirname(__DIR__).'/var/sessions/projects-'.$environment.'-'.hash('sha256', $portalUserId);
+
+    archMcpRunAndEmit(
+        archMcpBuildProjectsServer($logger, $tools, $route['serverName'], $sessionDir),
+        $logger
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -264,6 +331,11 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects/?$#', $requestPath
 //     what's broken, which is the entire reason it exists;
 //   - resolves to ONE fixed Portal user (whichever BREAKGLASS_PORTAL_
 //     USER_ID names — see BreakglassAuth), not a per-caller identity;
+//   - ALWAYS queries PRODUCTION Portal's database, never staging —
+//     decided 2026-09-28 alongside the /projects-staging split: this
+//     address's whole reason to exist is reaching PRODUCTION when OAuth
+//     is broken, so it is deliberately not environment-selectable by the
+//     caller (there is no way to ask it for staging, on purpose);
 //   - passes $bypassFrameworkCarveOut=true, the one and only place in
 //     this codebase that does — see PortalProjectResolver's own
 //     docblock for exactly what that unlocks and why.
@@ -293,9 +365,7 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects-token/?$#', $reque
 
     $logger->warning('BREAK-GLASS /projects-token request authorised', ['portal_user_id' => $portalUserId]);
 
-    $container = new Container();
-    $container->set(LoggerInterface::class, $logger);
-    $container->set(ProjectsTools::class, new ProjectsTools($logger, $portalUserId, bypassFrameworkCarveOut: true));
+    $tools = new ProjectsTools($logger, $portalUserId, 'production', bypassFrameworkCarveOut: true);
 
     // Deliberately its OWN session directory, distinct from /projects'
     // per-user partitioning above — this is a single fixed identity, not
@@ -303,64 +373,10 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects-token/?$#', $reque
     // identity alone (not by request) is correct and sufficient.
     $sessionDir = dirname(__DIR__).'/var/sessions/projects-token-'.hash('sha256', $portalUserId);
 
-    $builder = Server::builder()
-        ->setServerInfo('arch-mcp (BREAK-GLASS)', '0.3.0')
-        ->setLogger($logger)
-        ->setContainer($container)
-        ->setSession(new FileSessionStore($sessionDir))
-        ->addTool([ProjectsTools::class, 'archSessionStart'], 'arch_session_start')
-        ->addTool([ProjectsTools::class, 'archCodegenPreview'], 'arch_codegen_preview')
-        ->addTool([ProjectsTools::class, 'archSessionCommit'], 'arch_session_commit')
-        ->addTool([ProjectsTools::class, 'archSessionDiscard'], 'arch_session_discard')
-        ->addTool([ProjectsTools::class, 'archSessionStatus'], 'arch_session_status')
-        ->addTool([ProjectsTools::class, 'archSessionWriteFile'], 'arch_session_write_file')
-        ->addTool([ProjectsTools::class, 'archSessionReadFile'], 'arch_session_read_file')
-        ->addTool([ProjectsTools::class, 'archSessionListFiles'], 'arch_session_list_files')
-        ->addTool([ProjectsTools::class, 'archCodeWriteFile'], 'arch_code_write_file')
-        ->addTool([ProjectsTools::class, 'archCodeReadFile'], 'arch_code_read_file')
-        ->addTool([ProjectsTools::class, 'archCodeListFiles'], 'arch_code_list_files')
-        ->addTool([ProjectsTools::class, 'archSiteWriteFile'], 'arch_site_write_file')
-        ->addTool([ProjectsTools::class, 'archSiteReadFile'], 'arch_site_read_file')
-        ->addTool([ProjectsTools::class, 'archSiteListFiles'], 'arch_site_list_files')
-        ->addTool([ProjectsTools::class, 'archAssetsWriteFile'], 'arch_assets_write_file')
-        ->addTool([ProjectsTools::class, 'archAssetsReadFile'], 'arch_assets_read_file')
-        ->addTool([ProjectsTools::class, 'archAssetsListFiles'], 'arch_assets_list_files')
-        ->addTool([ProjectsTools::class, 'archCoreGitStatus'], 'arch_core_git_status')
-        ->addTool([ProjectsTools::class, 'archCoreGitDiff'], 'arch_core_git_diff')
-        ->addTool([ProjectsTools::class, 'archCoreGitLog'], 'arch_core_git_log')
-        ->addTool([ProjectsTools::class, 'archCoreGitShow'], 'arch_core_git_show')
-        ->addTool([ProjectsTools::class, 'archCoreGitFetch'], 'arch_core_git_fetch')
-        ->addTool([ProjectsTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull')
-        ->addTool([ProjectsTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push')
-        ->addTool([ProjectsTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations')
-        ->addTool([ProjectsTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations')
-        ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
-        ->addTool([ProjectsTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row')
-        ->setCapabilities(new ServerCapabilities(
-            tools: true,
-            toolsListChanged: false,
-            resources: false,
-            resourcesSubscribe: false,
-            resourcesListChanged: false,
-            prompts: false,
-            promptsListChanged: false,
-            logging: false,
-            completions: false,
-        ));
-
-    $server = $builder->build();
-
-    $psr17 = new Psr17Factory();
-    $transport = new StreamableHttpTransport(
-        $psr17->createServerRequestFromGlobals(),
-        logger: $logger,
+    archMcpRunAndEmit(
+        archMcpBuildProjectsServer($logger, $tools, 'arch-mcp (BREAK-GLASS)', $sessionDir),
+        $logger
     );
-
-    $response = $server->run($transport);
-
-    (new SapiEmitter())->emit($response);
-
-    exit;
 }
 
 // ---------------------------------------------------------------------
@@ -600,12 +616,4 @@ $server = $builder
     ))
     ->build();
 
-$psr17 = new Psr17Factory();
-$transport = new StreamableHttpTransport(
-    $psr17->createServerRequestFromGlobals(),
-    logger: $logger,
-);
-
-$response = $server->run($transport);
-
-(new SapiEmitter())->emit($response);
+archMcpRunAndEmit($server, $logger);

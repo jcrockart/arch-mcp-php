@@ -8,16 +8,17 @@ use Firebase\JWT\Key;
 use Firebase\JWT\SignatureInvalidException;
 
 /**
- * Bearer-JWT verification for the /projects address (Slice 2 of
- * claude/proposal-arch-mcp-oauth-projects-connector.md).
+ * Bearer-JWT verification for the /projects and /projects-staging
+ * addresses (Slice 2 of claude/proposal-arch-mcp-oauth-projects-
+ * connector.md).
  *
  * Every OTHER address this server serves (/project/<name>, /group/<name>/
  * <sub>) is authenticated by ArchProfiles.php: a long-lived opaque token
  * in the X-Api-Key header, looked up in a local, host-only map. /projects
- * is authenticated differently, on purpose — a short-lived (1h) RS256 JWT
- * minted by arch-portal's own OAuth authorization server (Slice 1),
- * carried in the header the MCP spec actually calls for:
- * `Authorization: Bearer <jwt>`.
+ * and /projects-staging are authenticated differently, on purpose — a
+ * short-lived (1h) RS256 JWT minted by arch-portal's own OAuth
+ * authorization server (Slice 1), carried in the header the MCP spec
+ * actually calls for: `Authorization: Bearer <jwt>`.
  *
  * MULTI-ISSUER TRUST, added 2026-09-28 (claude/note-2026-09-28-oauthbearer-
  * multi-issuer-trust.md): this class used to trust exactly ONE (issuer,
@@ -32,19 +33,36 @@ use Firebase\JWT\SignatureInvalidException;
  * this SAME single arch-mcp-php checkout — there is no "cutover" that
  * makes both work at once under the old one-key model.
  *
- * Now trusts a LIST of (issuer, public key) pairs, read from
- * TRUSTED_ISSUERS_PATH as a JSON array. verifyRequest() tries each
- * public key in turn until one verifies the JWT's signature, and
- * everything else about the fail-closed posture below is unchanged: any
- * single failure (missing header, malformed JWT, no key verifies it,
- * expired, wrong scope, unreadable/missing/malformed trust file) still
- * resolves to null. There is no `iss` claim on these tokens to key the
- * lookup by (league/oauth2-server's default JWT access tokens don't
- * carry one, and adding one on arch-portal's side would be a needless
+ * Now trusts a LIST of (issuer, public key, environment) triples, read
+ * from TRUSTED_ISSUERS_PATH as a JSON array. verifyRequest() tries each
+ * entry belonging to the CALLER-REQUIRED environment (see below) in
+ * turn until one verifies the JWT's signature; everything else about the
+ * fail-closed posture is unchanged: any single failure (missing header,
+ * malformed JWT, no matching-environment key verifies it, expired, wrong
+ * scope, unreadable/missing/malformed trust file) still resolves to
+ * null. There is no `iss` claim on these tokens to key the lookup by
+ * directly (league/oauth2-server's default JWT access tokens don't carry
+ * one, and adding one on arch-portal's side would be a needless
  * cross-repo dependency for what a handful of RSA verify attempts
- * already solves cheaply) — trying every trusted key is simplest and
- * correct given the trust list will only ever hold a few entries
- * (staging + production Portal, today).
+ * already solves cheaply) — trying every trusted key belonging to the
+ * required environment is simplest and correct given the trust list will
+ * only ever hold a few entries (staging + production Portal, today).
+ *
+ * ENVIRONMENT SPLIT, added 2026-09-28 (claude/proposal-arch-mcp-projects-
+ * staging-split.md): /projects and /projects-staging are now two
+ * DISTINCT addresses, each bound to exactly one Portal environment's
+ * database (see PortalProjectResolver's own docblock for the database
+ * side of this). A staging-issued token must never authenticate against
+ * /projects (production), and a production-issued token must never
+ * authenticate against /projects-staging — each address's route in
+ * public/index.php calls verifyRequest() with the environment it alone
+ * serves, and a token whose issuer belongs to the OTHER environment is
+ * treated exactly like an unverifiable signature (collapses to the same
+ * 401, not a distinguishable error). This is why each trusted-issuer
+ * entry below now carries its own `environment` tag, not just an
+ * `issuer` URL — the tag is what verifyRequest() actually filters on;
+ * `issuer` itself is carried only for the RFC 9728 metadata routes
+ * (advertising which authorization server serves which address).
  *
  * DEPLOYMENT: TRUSTED_ISSUERS_PATH is host-specific deployment state,
  * outside git and outside the web root — same secrets directory as
@@ -52,53 +70,59 @@ use Firebase\JWT\SignatureInvalidException;
  * discipline as the single-pair file it replaces. Its shape:
  *
  *   [
- *     {"issuer": "https://staging-portal.crockart.com.au", "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"},
- *     {"issuer": "https://portal.crockart.com.au", "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"}
+ *     {"issuer": "https://staging-portal.crockart.com.au", "environment": "staging", "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"},
+ *     {"issuer": "https://portal.crockart.com.au", "environment": "production", "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"}
  *   ]
  *
  * Each entry's public_key is the PUBLIC half of that Portal environment's
  * own OAuth signing keypair (its storage/oauth/public.key), inlined as a
  * JSON string (embedded newlines as \n) rather than a separate file per
- * key — one file to maintain by hand instead of N. `issuer` is carried
- * only for the RFC 9728 protected-resource metadata route below
- * (advertising every trusted authorization server) — verification itself
- * tries every entry's key regardless of `issuer`, per the no-`iss`-claim
- * note above.
+ * key — one file to maintain by hand instead of N. `environment` must be
+ * exactly `staging` or `production`; an entry with any other value (or
+ * missing the field entirely) is dropped by loadTrustedIssuers() as
+ * malformed, same fail-closed handling as a missing `issuer`/`public_key`.
  */
 final class OAuthBearer
 {
     /**
-     * The JSON manifest of every (issuer, public key) pair this
-     * deployment trusts for /projects. Supersedes the old single
-     * PUBLIC_KEY_PATH/ISSUER_URL_PATH pair (2026-09-21/22) — see this
-     * class's own top docblock for why one pair stopped being enough.
-     * Not committed to git; maintained by hand, once per host (this
-     * server has only one checkout for both environments — see
-     * PROJECT-CONTEXT.md's "Checkout topology" note).
+     * The JSON manifest of every (issuer, environment, public key) triple
+     * this deployment trusts for /projects and /projects-staging.
+     * Supersedes the old single PUBLIC_KEY_PATH/ISSUER_URL_PATH pair
+     * (2026-09-21/22) — see this class's own top docblock for why one
+     * pair stopped being enough. Not committed to git; maintained by
+     * hand, once per host (this server has only one checkout for both
+     * environments — see PROJECT-CONTEXT.md's "Checkout topology" note).
      */
     private const TRUSTED_ISSUERS_PATH = '/home/crockart/arch-mcp-secrets/oauth-trusted-issuers.json';
 
-    /** The one scope every /projects tool call requires. */
+    /** The one scope every /projects(-staging) tool call requires. */
     private const REQUIRED_SCOPE = 'mcp';
 
     /**
-     * Verify a bearer JWT against every trusted public key and return
-     * its claims from whichever one verifies, or null on any failure at
-     * all (deliberately undifferentiated to the caller — see this
-     * class's own docblock).
+     * Verify a bearer JWT against every trusted public key BELONGING TO
+     * $requiredEnvironment, and return its claims from whichever one
+     * verifies, or null on any failure at all (deliberately
+     * undifferentiated to the caller — see this class's own docblock).
+     * An otherwise-valid token whose issuer belongs to the OTHER
+     * environment is rejected here, not left for the caller to check —
+     * see this class's top docblock, "ENVIRONMENT SPLIT".
      *
-     * @param array<string, mixed> $server $_SERVER
+     * @param array<string, mixed> $server            $_SERVER
+     * @param 'staging'|'production' $requiredEnvironment the ONE environment this address serves
      *
-     * @return array{sub: string, aud: string, scopes: list<string>}|null
+     * @return array{sub: string, aud: string, scopes: list<string>, environment: string}|null
      */
-    public static function verifyRequest(array $server): ?array
+    public static function verifyRequest(array $server, string $requiredEnvironment): ?array
     {
         $token = self::extractToken($server);
         if (null === $token) {
             return null;
         }
 
-        $trusted = self::loadTrustedIssuers();
+        $trusted = array_values(array_filter(
+            self::loadTrustedIssuers(),
+            static fn (array $e): bool => $e['environment'] === $requiredEnvironment
+        ));
         if ([] === $trusted) {
             return null;
         }
@@ -147,27 +171,34 @@ final class OAuthBearer
             return null;
         }
 
-        return ['sub' => $sub, 'aud' => $aud, 'scopes' => $scopes];
+        return ['sub' => $sub, 'aud' => $aud, 'scopes' => $scopes, 'environment' => $requiredEnvironment];
     }
 
     /**
-     * Every trusted issuer URL, for the RFC 9728 protected-resource
-     * metadata document's `authorization_servers` array (which the spec
-     * defines as a list precisely for this multi-AS case) — or an empty
-     * array if TRUSTED_ISSUERS_PATH is missing/empty/malformed, which
-     * public/index.php treats as a deploy-time misconfiguration (fails
-     * loudly, not with an empty advertised issuer list silently accepted
-     * as normal).
+     * Every trusted issuer URL belonging to $environment, for that
+     * environment's own RFC 9728 protected-resource metadata document's
+     * `authorization_servers` array (the spec defines this as a list to
+     * allow more than one trusted AS per resource, though today each
+     * environment-scoped address only ever has one). Returns an empty
+     * array if TRUSTED_ISSUERS_PATH is missing/empty/malformed, or has no
+     * entry for this environment — either way, the caller treats an
+     * empty result as a deploy-time misconfiguration (fails loudly, not
+     * with an empty advertised issuer list silently accepted as normal).
+     *
+     * @param 'staging'|'production' $environment
      *
      * @return list<string>
      */
-    public static function trustedIssuerUrls(): array
+    public static function trustedIssuerUrlsForEnvironment(string $environment): array
     {
-        return array_values(array_map(static fn (array $e): string => $e['issuer'], self::loadTrustedIssuers()));
+        return array_values(array_map(
+            static fn (array $e): string => $e['issuer'],
+            array_filter(self::loadTrustedIssuers(), static fn (array $e): bool => $e['environment'] === $environment)
+        ));
     }
 
     /**
-     * @return list<array{issuer: string, public_key: string}>
+     * @return list<array{issuer: string, environment: string, public_key: string}>
      */
     private static function loadTrustedIssuers(): array
     {
@@ -187,9 +218,14 @@ final class OAuthBearer
                 continue;
             }
             $issuer = $entry['issuer'] ?? null;
+            $environment = $entry['environment'] ?? null;
             $publicKey = $entry['public_key'] ?? null;
-            if (\is_string($issuer) && '' !== $issuer && \is_string($publicKey) && '' !== trim($publicKey)) {
-                $trusted[] = ['issuer' => $issuer, 'public_key' => $publicKey];
+            if (
+                \is_string($issuer) && '' !== $issuer
+                && \is_string($environment) && \in_array($environment, ['staging', 'production'], true)
+                && \is_string($publicKey) && '' !== trim($publicKey)
+            ) {
+                $trusted[] = ['issuer' => $issuer, 'environment' => $environment, 'public_key' => $publicKey];
             }
         }
 
