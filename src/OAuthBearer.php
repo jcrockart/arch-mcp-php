@@ -19,60 +19,72 @@ use Firebase\JWT\SignatureInvalidException;
  * carried in the header the MCP spec actually calls for:
  * `Authorization: Bearer <jwt>`.
  *
- * Same fail-closed discipline as ArchProfiles::resolve(): a missing
- * header, a malformed one, a bad signature, an expired token, a token
- * without the required scope, or an unreadable/missing public key all
- * resolve to null, and null means the request is refused. Never logs or
- * echoes the raw token.
+ * MULTI-ISSUER TRUST, added 2026-09-28 (claude/note-2026-09-28-oauthbearer-
+ * multi-issuer-trust.md): this class used to trust exactly ONE (issuer,
+ * public key) pair at a time — see the 2026-09-22 cutover note in
+ * PROJECT-CONTEXT.md, which repointed trust from staging Portal to
+ * production Portal and, as a direct and expected consequence,
+ * invalidated every staging-signed token. That was fine while only one
+ * environment's tokens needed to verify at any given moment. It stopped
+ * being fine the moment arch-portal grew a per-environment SERVICE OAuth
+ * credential (src/PortalServiceCredential.php on arch-portal) that both
+ * staging Portal AND production Portal each mint independently, against
+ * this SAME single arch-mcp-php checkout — there is no "cutover" that
+ * makes both work at once under the old one-key model.
  *
- * DEPLOYMENT: this class reads Portal's OAuth RSA *public* key from a
- * path outside git and outside the web root — same secrets directory as
- * ArchProfiles::MAP_PATH/PROFILES_PATH. The key itself is not a secret
- * (it is the PUBLIC half of the keypair arch-portal signs tokens with)
- * but it is host-specific deployment state, copied by hand from
- * arch-portal's storage/oauth/public.key — see this class's own
- * PUBLIC_KEY_PATH constant and the Slice 2 build-log entry in the
- * proposal doc for the exact copy command. EDIT PUBLIC_KEY_PATH on
- * deployment if the secrets directory ever moves.
+ * Now trusts a LIST of (issuer, public key) pairs, read from
+ * TRUSTED_ISSUERS_PATH as a JSON array. verifyRequest() tries each
+ * public key in turn until one verifies the JWT's signature, and
+ * everything else about the fail-closed posture below is unchanged: any
+ * single failure (missing header, malformed JWT, no key verifies it,
+ * expired, wrong scope, unreadable/missing/malformed trust file) still
+ * resolves to null. There is no `iss` claim on these tokens to key the
+ * lookup by (league/oauth2-server's default JWT access tokens don't
+ * carry one, and adding one on arch-portal's side would be a needless
+ * cross-repo dependency for what a handful of RSA verify attempts
+ * already solves cheaply) — trying every trusted key is simplest and
+ * correct given the trust list will only ever hold a few entries
+ * (staging + production Portal, today).
+ *
+ * DEPLOYMENT: TRUSTED_ISSUERS_PATH is host-specific deployment state,
+ * outside git and outside the web root — same secrets directory as
+ * ArchProfiles::MAP_PATH/PROFILES_PATH — maintained BY HAND, same
+ * discipline as the single-pair file it replaces. Its shape:
+ *
+ *   [
+ *     {"issuer": "https://staging-portal.crockart.com.au", "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"},
+ *     {"issuer": "https://portal.crockart.com.au", "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"}
+ *   ]
+ *
+ * Each entry's public_key is the PUBLIC half of that Portal environment's
+ * own OAuth signing keypair (its storage/oauth/public.key), inlined as a
+ * JSON string (embedded newlines as \n) rather than a separate file per
+ * key — one file to maintain by hand instead of N. `issuer` is carried
+ * only for the RFC 9728 protected-resource metadata route below
+ * (advertising every trusted authorization server) — verification itself
+ * tries every entry's key regardless of `issuer`, per the no-`iss`-claim
+ * note above.
  */
 final class OAuthBearer
 {
     /**
-     * Portal's OAuth RSA public key. Deployment-time constant, same
-     * discipline as ArchProfiles::MAP_PATH — EDIT THIS if the secrets
-     * directory ever moves. Not committed to git; copied by hand once
-     * per environment (staging reads staging's key, prod reads prod's —
-     * never cross the two, since a staging-signed token must not verify
-     * against production or vice versa).
+     * The JSON manifest of every (issuer, public key) pair this
+     * deployment trusts for /projects. Supersedes the old single
+     * PUBLIC_KEY_PATH/ISSUER_URL_PATH pair (2026-09-21/22) — see this
+     * class's own top docblock for why one pair stopped being enough.
+     * Not committed to git; maintained by hand, once per host (this
+     * server has only one checkout for both environments — see
+     * PROJECT-CONTEXT.md's "Checkout topology" note).
      */
-    private const PUBLIC_KEY_PATH = '/home/crockart/arch-mcp-secrets/oauth-public.key';
-
-    /**
-     * Path to a one-line file holding THIS deployment's Portal issuer
-     * URL — the value the /oauth-protected-resource/projects metadata
-     * route (public/index.php) advertises as `authorization_servers`.
-     * Same "copied/edited by hand once per environment, never
-     * committed" discipline as PUBLIC_KEY_PATH just above: staging's
-     * file holds staging Portal's URL (https://staging-portal.crockart.
-     * com.au), production's file holds production Portal's URL.
-     *
-     * Deliberately NOT a git-tracked ArchConfig-style constant. That
-     * exact mistake was already made and caught once in this project —
-     * see claude/proposal-portal-first-project-inception.md's
-     * 2026-09-21c entry: staging and production are two live checkouts
-     * of the SAME git history (staging pushes to origin, production
-     * fast-forward-pulls from it), so a single hardcoded value can't
-     * safely differ between them. This file lives outside git for the
-     * same reason PUBLIC_KEY_PATH does.
-     */
-    private const ISSUER_URL_PATH = '/home/crockart/arch-mcp-secrets/oauth-issuer-url.txt';
+    private const TRUSTED_ISSUERS_PATH = '/home/crockart/arch-mcp-secrets/oauth-trusted-issuers.json';
 
     /** The one scope every /projects tool call requires. */
     private const REQUIRED_SCOPE = 'mcp';
 
     /**
-     * Verify a bearer JWT and return its claims, or null on any failure
-     * at all (deliberately undifferentiated to the caller — see this
+     * Verify a bearer JWT against every trusted public key and return
+     * its claims from whichever one verifies, or null on any failure at
+     * all (deliberately undifferentiated to the caller — see this
      * class's own docblock).
      *
      * @param array<string, mixed> $server $_SERVER
@@ -86,14 +98,26 @@ final class OAuthBearer
             return null;
         }
 
-        $publicKey = @file_get_contents(self::PUBLIC_KEY_PATH);
-        if (false === $publicKey || '' === trim($publicKey)) {
+        $trusted = self::loadTrustedIssuers();
+        if ([] === $trusted) {
             return null;
         }
 
-        try {
-            $decoded = JWT::decode($token, new Key($publicKey, 'RS256'));
-        } catch (ExpiredException|SignatureInvalidException|\UnexpectedValueException|\DomainException|\InvalidArgumentException $e) {
+        $decoded = null;
+        foreach ($trusted as $entry) {
+            try {
+                $decoded = JWT::decode($token, new Key($entry['public_key'], 'RS256'));
+                break;
+            } catch (ExpiredException|SignatureInvalidException|\UnexpectedValueException|\DomainException|\InvalidArgumentException $e) {
+                // This key didn't verify it — try the next one. An
+                // ExpiredException here is still worth trying other
+                // keys for (a different environment's differently-timed
+                // token could still be valid), and the loop naturally
+                // ends in null if nothing verifies.
+                continue;
+            }
+        }
+        if (null === $decoded) {
             return null;
         }
 
@@ -127,20 +151,49 @@ final class OAuthBearer
     }
 
     /**
-     * This deployment's Portal issuer URL, for the RFC 9728 protected-
-     * resource metadata document — or null if ISSUER_URL_PATH is
-     * missing/empty, which public/index.php treats as a deploy-time
-     * misconfiguration (fails loudly, not with an empty advertised
-     * issuer list).
+     * Every trusted issuer URL, for the RFC 9728 protected-resource
+     * metadata document's `authorization_servers` array (which the spec
+     * defines as a list precisely for this multi-AS case) — or an empty
+     * array if TRUSTED_ISSUERS_PATH is missing/empty/malformed, which
+     * public/index.php treats as a deploy-time misconfiguration (fails
+     * loudly, not with an empty advertised issuer list silently accepted
+     * as normal).
+     *
+     * @return list<string>
      */
-    public static function portalIssuer(): ?string
+    public static function trustedIssuerUrls(): array
     {
-        $issuer = @file_get_contents(self::ISSUER_URL_PATH);
-        if (false === $issuer || '' === trim($issuer)) {
-            return null;
+        return array_values(array_map(static fn (array $e): string => $e['issuer'], self::loadTrustedIssuers()));
+    }
+
+    /**
+     * @return list<array{issuer: string, public_key: string}>
+     */
+    private static function loadTrustedIssuers(): array
+    {
+        $raw = @file_get_contents(self::TRUSTED_ISSUERS_PATH);
+        if (false === $raw || '' === trim($raw)) {
+            return [];
         }
 
-        return trim($issuer);
+        $decoded = json_decode($raw, true);
+        if (!\is_array($decoded)) {
+            return [];
+        }
+
+        $trusted = [];
+        foreach ($decoded as $entry) {
+            if (!\is_array($entry)) {
+                continue;
+            }
+            $issuer = $entry['issuer'] ?? null;
+            $publicKey = $entry['public_key'] ?? null;
+            if (\is_string($issuer) && '' !== $issuer && \is_string($publicKey) && '' !== trim($publicKey)) {
+                $trusted[] = ['issuer' => $issuer, 'public_key' => $publicKey];
+            }
+        }
+
+        return $trusted;
     }
 
     /**

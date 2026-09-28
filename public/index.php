@@ -74,8 +74,8 @@ $logger = archMcpLogger();
 // and production are two checkouts of the same git history serving two
 // different domains, so any URL that needs to differ between them has
 // to be computed from the live request or read from deploy-time state
-// outside git (see OAuthBearer::ISSUER_URL_PATH for the latter), never
-// written as a literal here.
+// outside git (see OAuthBearer::TRUSTED_ISSUERS_PATH for the latter),
+// never written as a literal here.
 $requestScheme = (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS']) ? 'https' : 'http';
 $requestHost = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
 $resourceMetadataUrl = $requestScheme.'://'.$requestHost.'/oauth-protected-resource/projects';
@@ -104,17 +104,22 @@ $resourceMetadataUrl = $requestScheme.'://'.$requestHost.'/oauth-protected-resou
 //
 // Deliberately unauthenticated: RFC 9728 protected-resource metadata
 // must be publicly fetchable, unlike every other address in this file.
+//
+// UPDATED 2026-09-28: `authorization_servers` now lists EVERY issuer
+// OAuthBearer trusts (see that class's multi-issuer-trust docblock),
+// not just one — RFC 9728 defines this field as a list precisely to
+// let a resource server accept tokens from more than one AS.
 // ---------------------------------------------------------------------
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
 if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/projects/?$#', $requestPath)) {
-    $issuer = OAuthBearer::portalIssuer();
+    $issuers = OAuthBearer::trustedIssuerUrls();
 
-    if (null === $issuer) {
-        // Deploy-time misconfiguration (missing/empty ISSUER_URL_PATH
-        // file) — never advertise an empty authorization_servers list,
-        // fail loudly instead so this is noticed rather than silently
-        // breaking discovery.
-        $logger->critical('OAuthBearer::portalIssuer() unset — cannot serve protected-resource metadata');
+    if ([] === $issuers) {
+        // Deploy-time misconfiguration (missing/empty/malformed
+        // TRUSTED_ISSUERS_PATH file) — never advertise an empty
+        // authorization_servers list, fail loudly instead so this is
+        // noticed rather than silently breaking discovery.
+        $logger->critical('OAuthBearer::trustedIssuerUrls() empty — cannot serve protected-resource metadata');
         http_response_code(500);
         header('Content-Type: application/json');
         echo json_encode(['error' => 'internal_error']);
@@ -124,7 +129,7 @@ if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/pr
     header('Content-Type: application/json');
     echo json_encode([
         'resource' => $requestScheme.'://'.$requestHost.'/projects',
-        'authorization_servers' => [$issuer],
+        'authorization_servers' => $issuers,
     ]);
     exit;
 }
