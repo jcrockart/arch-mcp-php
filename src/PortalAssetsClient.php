@@ -77,8 +77,8 @@ final class PortalAssetsClient
     }
 
     /**
-     * @param 'list'|'read'|'write' $action
-     * @param array<string, mixed>  $fields extra JSON fields (name, content, on_conflict, ...)
+     * @param 'list'|'read'|'write'|'set_publish' $action
+     * @param array<string, mixed>                $fields extra JSON fields (name, content, on_conflict, publish, ...)
      *
      * @return array<string, mixed> Portal's decoded JSON reply (always has `success`), or a
      *                              {success: false, error, code} array for transport problems

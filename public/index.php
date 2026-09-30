@@ -114,6 +114,7 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archSiteReadFile'], 'arch_site_read_file')
         ->addTool([ProjectsTools::class, 'archSiteListFiles'], 'arch_site_list_files')
         ->addTool([ProjectsTools::class, 'archAssetsWriteFile'], 'arch_assets_write_file')
+        ->addTool([ProjectsTools::class, 'archAssetsSetPublish'], 'arch_assets_set_publish')
         ->addTool([ProjectsTools::class, 'archAssetsReadFile'], 'arch_assets_read_file')
         ->addTool([ProjectsTools::class, 'archAssetsListFiles'], 'arch_assets_list_files')
         ->addTool([ProjectsTools::class, 'archCoreGitStatus'], 'arch_core_git_status')
@@ -590,8 +591,8 @@ if (isset($profile['lanes']['assets'])) {
 // itself when the project was requested there — Portal, not this
 // server, validates that pair and remains the sole writer of its own
 // `projects` table. So the only thing worth gating here is "may this
-// token attempt the call at all", via a new bootstrap_fill_allowed flag
-// (set in profiles.json, off by default, provisioned via
+// token attempt the call at all", via a new bootstrap_fill_allowed
+// flag (set in profiles.json, off by default, provisioned via
 // mint-tokens.py --allow-bootstrap-fill). Same "advertised list is a
 // filter, runtime check is the real control, both required" principle
 // as every other block above — the runtime check lives in
