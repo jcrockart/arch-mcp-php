@@ -13,24 +13,12 @@ namespace ArchMcp;
  * could fix it. This address is that path: a single static bearer
  * secret (no OAuth involved at all, so it cannot be taken down by an
  * OAuth-layer bug), authenticating one fixed Portal user, reaching every
- * tool PortalProjectResolver/ProjectsTools already implement — including,
- * deliberately, the two capabilities the framework carve-out normally
- * blocks (session_tools, push_allowed) for category='framework' projects.
- * See PortalProjectResolver::resolve()'s $bypassFrameworkCarveOut
- * parameter, which this address is the ONLY caller of.
  *
- * This is real elevated access, structurally equivalent to holding SSH
- * write access to every checkout on this host — worth resenting the
- * ergonomics that make it easy to reach for out of habit rather than
- * genuine need. Same header convention as ArchProfiles' static
- * connectors (X-Api-Key), not the OAuth bearer scheme /projects uses,
- * since this must keep working when Portal's own OAuth code is what's
- * broken. Same 404-not-401 fail-closed posture as ArchProfiles: an
- * unauthenticated caller learns nothing. The token is never logged;
- * every successful use IS logged, at WARNING (not INFO) — see
- * public/index.php's /projects-token block — precisely because this
- * path should stay rare enough that every use is worth a human noticing
- * in the logs afterward.
+ * tool PortalProjectResolver/ProjectsTools already implement. Since the
+ * framework carve-out was removed (2026-10-02) this address resolves
+ * projects exactly as /projects does; the only difference is how it
+ * authenticates (one fixed identity, static secret, production only).*
+ *
  */
 final class BreakglassAuth
 {

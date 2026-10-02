@@ -275,10 +275,6 @@ if (\is_string($requestPath) && 1 === preg_match('#^/oauth-protected-resource/pr
 // (new) an otherwise-valid token from the OTHER environment all collapse
 // to the same 401, and the raw token is never logged.
 //
-// Neither of these addresses ever passes $bypassFrameworkCarveOut=true to
-// PortalProjectResolver::resolve() — see /projects-token below for the
-// one address that does, and PortalProjectResolver's own docblock for
-// why that split exists.
 // ---------------------------------------------------------------------
 foreach ([
     ['path' => '#^/projects/?$#', 'environment' => 'production', 'resourceMetadataPath' => '/oauth-protected-resource/projects', 'serverName' => 'arch-mcp (projects)'],
@@ -337,9 +333,6 @@ foreach ([
 //     address's whole reason to exist is reaching PRODUCTION when OAuth
 //     is broken, so it is deliberately not environment-selectable by the
 //     caller (there is no way to ask it for staging, on purpose);
-//   - passes $bypassFrameworkCarveOut=true, the one and only place in
-//     this codebase that does — see PortalProjectResolver's own
-//     docblock for exactly what that unlocks and why.
 //
 // Same 404-not-401 fail-closed posture as the token-gate block below
 // (this is a static-secret address, not an OAuth-discoverable one, so
@@ -366,7 +359,7 @@ if (\is_string($requestPath) && 1 === preg_match('#^/projects-token/?$#', $reque
 
     $logger->warning('BREAK-GLASS /projects-token request authorised', ['portal_user_id' => $portalUserId]);
 
-    $tools = new ProjectsTools($logger, $portalUserId, 'production', bypassFrameworkCarveOut: true);
+    $tools = new ProjectsTools($logger, $portalUserId, 'production', breakglass: true);
 
     // Deliberately its OWN session directory, distinct from /projects'
     // per-user partitioning above — this is a single fixed identity, not

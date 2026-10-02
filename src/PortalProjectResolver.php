@@ -55,48 +55,15 @@ namespace ArchMcp;
  * environment, or the caller isn't a member — deliberately
  * indistinguishable, same reasoning as ArchProfiles' own 404-not-403
  * posture), or a root that doesn't exist on disk all resolve to null.
- *
- * FRAMEWORK CARVE-OUT, built in here from the start (not retrofitted,
- * per the instruction that opened this slice): a project whose
- * `category` is 'framework' (arch-core, arch-mcp, arch-portal,
- * arch-bootstrap) NEVER gets session_tools or push_allowed through the
- * OAuth /projects or /projects-staging paths, no matter what
- * project_profiles/project_members says. This is enforced as an
- * explicit, hardcoded override below — not a WHERE clause a future
- * query change could accidentally drop, and not something the data
- * model prevents on its own. A framework project remains reachable here
- * for pull/read access (an owner may still want to inspect it), but
- * never for the two capabilities that could let an untrusted or
- * lower-trust caller push code into, or run arbitrary session/codegen
- * tooling against, the very framework this server and Portal are built
- * from. EXTENDED 2026-09-27 (Confluence 49840130) to also deny a locked
- * dependency install (archDependencyInstall) for the same reason — see
- * the override below.
- *
- * EXTENDED 2026-09-27 (claude/proposal-framework-connector-consolidation.md,
- * slice 1): bootstrap_fill_allowed/bootstrap_fill_portal_url are now real
- * project_profiles columns instead of a hardcoded false/null, so
- * arch-bootstrap can fold into this address as the zero-argument case the
- * original OAuth proposal already decided it should be. This flag is
- * deliberately NOT added to the framework carve-out: it's the one
- * capability a framework project (specifically arch-bootstrap) is meant
- * to grant through this address — the carve-out exists to stop an
- * untrusted caller reaching a framework checkout's code/session tools,
- * not to block Portal's own inception-fill callback, which never touches
- * a framework checkout at all.
- *
- * EXTENDED 2026-09-28 (claude/proposal-framework-connector-consolidation.md,
- * break-glass design): $bypassFrameworkCarveOut, when true, skips the
- * carve-out entirely. The ONLY caller allowed to pass true is
- * public/index.php's /projects-token block (BreakglassAuth-gated, a
- * static secret independent of Portal's OAuth code) — see that address's
- * own docblock for why this bypass has to exist at all. Neither OAuth
- * address (/projects, /projects-staging) must EVER pass true here; doing
- * so would silently hand every OAuth-authenticated Portal user push/
- * session access to this server's and Portal's own source code, defeating
- * the entire point of the carve-out. There is no flag on project_profiles
- * or anywhere in the database that can turn this on — it is exclusively a
- * call-site decision made once, in one file, by one address.
+ * 
+ * NO FRAMEWORK CARVE-OUT, from 2026-10-02: framework projects (arch-core,
+ * arch-mcp, arch-portal, arch-bootstrap) are resolved exactly like any
+ * other project. What the project_profiles row says is what the caller
+ * gets. Removed at James's direction; the earlier hardcoded override
+ * (session_tools, push_allowed and dependency install forced off for
+ * framework projects on the OAuth addresses) and its break-glass bypass
+ * flag no longer exist.
+ * 
  */
 final class PortalProjectResolver
 {
@@ -134,7 +101,7 @@ final class PortalProjectResolver
      *
      * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
-    public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, string $environment, bool $bypassFrameworkCarveOut = false): ?array
+    public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, string $environment): ?array
     {
         if (1 !== preg_match('/^[0-9]+$/', $portalUserId)) {
             return null;
@@ -159,7 +126,7 @@ final class PortalProjectResolver
 
         try {
             $stmt = $pdo->prepare(
-                'SELECT p.category, pp.root, pp.lanes, pp.session_tools, pp.write_extensions,
+                'SELECT pp.root, pp.lanes, pp.session_tools, pp.write_extensions,
                         pp.pull_allowed, pp.pull_branch, pp.push_allowed, pp.push_branch,
                         pp.db_apply_allowed, pp.dependency_manager, pp.dependency_exclude,
                         pp.bootstrap_fill_allowed, pp.bootstrap_fill_portal_url
@@ -187,7 +154,7 @@ final class PortalProjectResolver
             return null;
         }
 
-        return self::rowToProfile($slug, $row, $bypassFrameworkCarveOut);
+        return self::rowToProfile($slug, $row);
     }
 
     /**
@@ -195,7 +162,7 @@ final class PortalProjectResolver
      *
      * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
-    private static function rowToProfile(string $slug, array $row, bool $bypassFrameworkCarveOut = false): ?array
+    private static function rowToProfile(string $slug, array $row): ?array
     {
         $root = $row['root'] ?? null;
         if (!\is_string($root) || '' === $root) {
@@ -276,44 +243,12 @@ final class PortalProjectResolver
         // Real project_profiles columns as of
         // db/migrations/0023_2026-09-27c-bootstrap-fill-columns.sql (see
         // claude/proposal-framework-connector-consolidation.md, slice 1).
-        // Deliberately NOT folded into the framework carve-out below —
-        // see this class's top docblock.
         $bootstrapFillAllowed = (bool) ($row['bootstrap_fill_allowed'] ?? false);
         $bootstrapFillPortalUrl = \is_string($row['bootstrap_fill_portal_url'] ?? null) && '' !== $row['bootstrap_fill_portal_url']
             ? $row['bootstrap_fill_portal_url']
             : null;
 
-        // FRAMEWORK CARVE-OUT — see this class's top docblock. Applied
-        // here, unconditionally, after every other field has already
-        // been read from the row: a framework project never grants
-        // session_tools or push through an OAuth address, regardless of
-        // what project_profiles says. Pull/read access is unaffected.
-        // Skipped ENTIRELY when $bypassFrameworkCarveOut is true — see
-        // this class's top docblock ("EXTENDED 2026-09-28") for the one
-        // caller allowed to pass that.
-        //
-        // DECIDED 2026-09-27, alongside archDependencyInstall (Confluence
-        // 49840130): extended to also deny a locked dependency install for
-        // framework projects (arch-core, arch-mcp, arch-portal,
-        // arch-bootstrap). Rationale: this server and Portal are built FROM
-        // these repos, and even a locked, network-egress-only install
-        // still runs arbitrary packages' own install/postinstall scripts
-        // against a framework checkout — the same "untrusted caller
-        // reaches the framework itself" risk category session_tools/push
-        // were already carved out for, not a materially smaller one just
-        // because the install is locked.
-        //
-        // bootstrap_fill_allowed/bootstrap_fill_portal_url are deliberately
-        // NOT zeroed here regardless of $bypassFrameworkCarveOut — see
-        // this class's top docblock, "EXTENDED 2026-09-27 ... slice 1".
-        if (!$bypassFrameworkCarveOut && 'framework' === ($row['category'] ?? null)) {
-            $sessionTools = false;
-            $pushAllowed = false;
-            $dependencyManager = 'none';
-            $dependencyExclude = null;
-        }
-
-        return [
+         return [
             'label' => $slug,
             'kind' => 'project',
             'seed' => false,

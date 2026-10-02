@@ -72,15 +72,12 @@ require_once __DIR__.'/PortalAssetsClient.php';
  * property of WHICH ADDRESS was called, not something a request could
  * influence.
  *
- * BREAK-GLASS, added 2026-09-28 (claude/proposal-framework-connector-
- * consolidation.md): $bypassFrameworkCarveOut, threaded through to every
- * PortalProjectResolver::resolve() call below, defaults false (the OAuth
- * addresses' behaviour, unchanged). public/index.php's /projects-token
- * block is the ONLY caller that constructs this class with it set true —
- * see PortalProjectResolver's own docblock for why that bypass has to
- * exist, and BreakglassAuth for how that address authenticates
- * independently of Portal's OAuth code.
- *
+ * BREAK-GLASS: $breakglass is true only for the /projects-token address,
+ * which authenticates with a static secret and carries no OAuth token. It
+ * no longer affects project resolution (the framework carve-out was removed
+ * 2026-10-02); it only tells portalAssets() there is no bearer token to
+ * forward to Portal.
+ * 
  * ASSETS ARE PORTAL'S, NOT A DIRECTORY'S, added 2026-09-30
  * (Confluence 51609602): on these addresses arch_assets_list_files /
  * read_file / write_file / set_publish no longer delegate to ArchTools'
@@ -107,7 +104,7 @@ final class ProjectsTools
         private readonly LoggerInterface $logger,
         private readonly string $portalUserId,
         private readonly string $environment,
-        private readonly bool $bypassFrameworkCarveOut = false,
+        private readonly bool $breakglass = false,
     ) {
     }
 
@@ -120,7 +117,7 @@ final class ProjectsTools
      */
     private function forSlugProcess(string $slug): ArchTools|array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $this->bypassFrameworkCarveOut);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
         if (null === $profile) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -136,7 +133,7 @@ final class ProjectsTools
      */
     private function forSlugFile(string $slug): ArchTools|array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $this->bypassFrameworkCarveOut);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -153,7 +150,7 @@ final class ProjectsTools
      */
     private function requireSessionTools(string $slug, ArchTools $tools): ?array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $this->bypassFrameworkCarveOut);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
         if (null === $profile || !$profile['session_tools']) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this project's profile does not grant session tools"];
         }
@@ -177,11 +174,11 @@ final class ProjectsTools
      */
     private function portalAssets(string $slug): PortalAssetsClient|array|null
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $this->bypassFrameworkCarveOut);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
         }
-        if ($this->bypassFrameworkCarveOut) {
+        if ($this->breakglass) {
             return null;
         }
         $token = PortalAssetsClient::bearerFromServer($_SERVER);
