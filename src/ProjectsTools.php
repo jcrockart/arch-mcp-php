@@ -9,6 +9,7 @@ use Psr\Log\LoggerInterface;
 // that cannot see a class added after it was built.
 require_once __DIR__.'/PortalAssetsClient.php';
 require_once __DIR__.'/ProdState.php';
+require_once __DIR__.'/CodeEdit.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -333,6 +334,29 @@ final class ProjectsTools
         $t = $this->forSlugFile($slug);
 
         return \is_array($t) ? $t : $t->archCodeListFiles();
+    }
+
+    /**
+     * Change ONE exact piece of text in a code-lane file, without resending
+     * the whole file. `old` must match the file exactly once, byte for byte
+     * (whitespace and line endings included); zero matches or more than one
+     * changes nothing and the error says which, so add surrounding lines to
+     * `old` until it is unique. `new` replaces it literally; an empty `new`
+     * deletes `old`. Needs an active session on the code lane, like
+     * arch_code_write_file, and obeys the same path and file-type limits. To
+     * create a new file or replace one wholesale, use arch_code_write_file.
+     * The reply gives the line number and byte size, not the file content.
+     *
+     * @param string $slug project slug
+     * @param string $path file path inside the code lane, e.g. "src/ArchTools.php"
+     * @param string $old  the exact text to replace; must occur exactly once
+     * @param string $new  the replacement text (may be empty to delete)
+     */
+    public function archCodeEditFile(string $slug, string $path, string $old, string $new): array
+    {
+        $t = $this->forSlugFile($slug);
+
+        return \is_array($t) ? $t : CodeEdit::run($t, $path, $old, $new);
     }
 
     // -----------------------------------------------------------------
