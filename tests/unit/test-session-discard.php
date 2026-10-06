@@ -134,6 +134,39 @@ $failing = static fn (array $args): array => 'commit' === $args[0] ? ['exit_code
 $r = SessionDiscard::snapshot($failing, $d);
 check('a failing commit is reported, not hidden', false === $r['ok'] && str_contains($r['error'], 'git commit failed') && str_contains($r['error'], 'boom'));
 
+echo "\nsnapshot(): git identity\n";
+$noIdentityGit = static fn (string $d): callable => static function (array $args) use ($d): array {
+    $env = ['PATH' => getenv('PATH') ?: '/usr/bin:/bin', 'HOME' => '/nonexistent', 'GIT_CONFIG_GLOBAL' => '/dev/null', 'GIT_CONFIG_NOSYSTEM' => '1'];
+    $p = proc_open(array_merge(['git'], $args), [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $d, $env);
+    $out = stream_get_contents($pipes[1]);
+    $err = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    return ['exit_code' => proc_close($p), 'stdout' => (string) $out, 'stderr' => (string) $err];
+};
+$d = $make('noid');
+git($d, 'config --unset user.email');
+git($d, 'config --unset user.name');
+git($d, 'config user.useConfigOnly true');
+file_put_contents("$d/src/a.php", "<?php\n\$a = 7;\n");
+$probe = $noIdentityGit($d)(['commit', '--allow-empty', '-q', '-m', 'probe']);
+check('premise: a plain commit fails in this checkout', 0 !== $probe['exit_code']);
+$r = SessionDiscard::snapshot($noIdentityGit($d), $d);
+check('no identity configured: the snapshot still commits', true === $r['ok'] && true === $r['snapshotted'] && 1 === $r['files']);
+check('...using the fallback identity', 'ARCH session discard' === git($d, 'log -1 --format=%an') && 'arch-session@localhost' === git($d, 'log -1 --format=%ae'));
+
+$d = $make('halfid');
+git($d, 'config --unset user.name');
+git($d, 'config user.useConfigOnly true');
+file_put_contents("$d/src/a.php", "<?php\n\$a = 8;\n");
+$r = SessionDiscard::snapshot($noIdentityGit($d), $d);
+check('only the name missing: fallback name, configured email kept', true === $r['ok'] && 'ARCH session discard' === git($d, 'log -1 --format=%an') && 't@example.com' === git($d, 'log -1 --format=%ae'));
+
+$d = $make('withid');
+file_put_contents("$d/src/a.php", "<?php\n\$a = 9;\n");
+$r = SessionDiscard::snapshot($noIdentityGit($d), $d);
+check('configured identity is never overridden', true === $r['ok'] && 't' === git($d, 'log -1 --format=%an') && 't@example.com' === git($d, 'log -1 --format=%ae'));
+
 echo "\narchSessionDiscard(): end to end\n";
 $d = $make('e2e');
 file_put_contents("$d/src/a.php", "<?php\n\$a = 5;\n");

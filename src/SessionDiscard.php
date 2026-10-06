@@ -24,6 +24,12 @@ namespace ArchMcp;
  * changed there makes no commit. If the snapshot cannot be made the caller
  * must NOT discard: reporting that is better than leaving unsaved work
  * stranded on main.
+ *
+ * GIT IDENTITY: a checkout with no user.name or user.email configured cannot
+ * make the snapshot commit (found 2026-10-06 on a provisioned test project,
+ * where discard refused with "Author identity unknown"). The commit now
+ * supplies a fallback for whichever of the two is missing, and never
+ * overrides one that is configured.
  */
 final class SessionDiscard
 {
@@ -93,7 +99,16 @@ final class SessionDiscard
             return ['ok' => true, 'snapshotted' => false, 'files' => 0];
         }
 
-        $commit = $git(['commit', '-q', '-m', "Discarded session snapshot: {$branch}"]);
+        // A checkout with no git identity (some provisioned projects) cannot commit at all. Supply a
+        // fallback for the missing half only; a configured name or email is never overridden.
+        $identity = [];
+        if ('' === trim($git(['config', 'user.name'])['stdout'])) {
+            array_push($identity, '-c', 'user.name=ARCH session discard');
+        }
+        if ('' === trim($git(['config', 'user.email'])['stdout'])) {
+            array_push($identity, '-c', 'user.email=arch-session@localhost');
+        }
+        $commit = $git(array_merge($identity, ['commit', '-q', '-m', "Discarded session snapshot: {$branch}"]));
         if (0 !== $commit['exit_code']) {
             return ['ok' => false, 'error' => 'git commit failed: '.trim($commit['stderr'].' '.$commit['stdout'])];
         }
