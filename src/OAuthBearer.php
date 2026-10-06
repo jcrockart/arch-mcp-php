@@ -110,7 +110,7 @@ final class OAuthBearer
      * @param array<string, mixed> $server            $_SERVER
      * @param 'staging'|'production' $requiredEnvironment the ONE environment this address serves
      *
-     * @return array{sub: string, aud: string, scopes: list<string>, environment: string}|null
+     * @return array{sub: string, aud: string, scopes: list<string>, environment: string, portal_service: bool}|null
      */
     public static function verifyRequest(array $server, string $requiredEnvironment): ?array
     {
@@ -128,9 +128,11 @@ final class OAuthBearer
         }
 
         $decoded = null;
+        $matched = null;
         foreach ($trusted as $entry) {
             try {
                 $decoded = JWT::decode($token, new Key($entry['public_key'], 'RS256'));
+                $matched = $entry;
                 break;
             } catch (ExpiredException|SignatureInvalidException|\UnexpectedValueException|\DomainException|\InvalidArgumentException $e) {
                 // This key didn't verify it — try the next one. An
@@ -171,7 +173,32 @@ final class OAuthBearer
             return null;
         }
 
-        return ['sub' => $sub, 'aud' => $aud, 'scopes' => $scopes, 'environment' => $requiredEnvironment];
+        return [
+            'sub' => $sub,
+            'aud' => $aud,
+            'scopes' => $scopes,
+            'environment' => $requiredEnvironment,
+            'portal_service' => self::isPortalService($matched ?? [], $aud),
+        ];
+    }
+
+    /**
+     * Is this token one Portal minted for ITSELF (its service credential)
+     * rather than for a person using an assistant? True only when the
+     * verifying issuer entry carries a non-empty `service_client_id` (added by
+     * hand to oauth-trusted-issuers.json, the value of that Portal's
+     * PORTAL_SERVICE_OAUTH_CLIENT_ID) and the token's `aud` (its client id)
+     * equals it. With no such entry nothing is ever a Portal service call, so
+     * the one thing that depends on this, confirming a destructive production
+     * migration, stays closed.
+     *
+     * @param array<string, mixed> $issuerEntry the trusted-issuer entry whose key verified the token
+     */
+    public static function isPortalService(array $issuerEntry, string $aud): bool
+    {
+        $id = $issuerEntry['service_client_id'] ?? '';
+
+        return \is_string($id) && '' !== $id && hash_equals($id, $aud);
     }
 
     /**
@@ -198,7 +225,7 @@ final class OAuthBearer
     }
 
     /**
-     * @return list<array{issuer: string, environment: string, public_key: string}>
+     * @return list<array{issuer: string, environment: string, public_key: string, service_client_id: string}>
      */
     private static function loadTrustedIssuers(): array
     {
@@ -225,7 +252,13 @@ final class OAuthBearer
                 && \is_string($environment) && \in_array($environment, ['staging', 'production'], true)
                 && \is_string($publicKey) && '' !== trim($publicKey)
             ) {
-                $trusted[] = ['issuer' => $issuer, 'environment' => $environment, 'public_key' => $publicKey];
+                $serviceClientId = $entry['service_client_id'] ?? null;
+                $trusted[] = [
+                    'issuer' => $issuer,
+                    'environment' => $environment,
+                    'public_key' => $publicKey,
+                    'service_client_id' => \is_string($serviceClientId) ? $serviceClientId : '',
+                ];
             }
         }
 

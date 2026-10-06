@@ -139,7 +139,7 @@ final class PortalProjectResolver
 
         try {
             $stmt = $pdo->prepare(
-                'SELECT pp.root, pp.lanes, pp.session_tools, pp.write_extensions,
+                'SELECT pp.environment AS profile_environment, pp.root, pp.lanes, pp.session_tools, pp.write_extensions,
                         pp.pull_allowed, pp.pull_branch, pp.push_allowed, pp.push_branch,
                         pp.db_apply_allowed, pp.dependency_manager, pp.dependency_exclude,
                         pp.bootstrap_fill_allowed, pp.bootstrap_fill_portal_url
@@ -267,6 +267,9 @@ final class PortalProjectResolver
          return [
             'label' => $slug,
             'kind' => 'project',
+            // Which profile row this is ('staging' or 'production'); the
+            // database tools use it to refuse a row that is not the one they name.
+            'profile_environment' => \is_string($row['profile_environment'] ?? null) ? $row['profile_environment'] : null,
             'seed' => false,
             'root' => $realRoot,
             'lanes' => $lanes,
@@ -282,6 +285,46 @@ final class PortalProjectResolver
             'dependency_manager' => $dependencyManager,
             'dependency_exclude' => $dependencyExclude,
         ];
+    }
+
+    /**
+     * The caller's role on a project, 'owner' or 'member', or null when they
+     * are not a member or anything at all goes wrong. Fails closed: a null
+     * here means "not an owner". Used only by the production database tools.
+     * Reads project_members.role (ENUM('owner','member')) from the Portal
+     * database for $environment, with the same read-only grant as resolve().
+     *
+     * @param 'staging'|'production' $environment
+     */
+    public static function memberRole(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, string $environment): ?string
+    {
+        if (1 !== preg_match('/^[0-9]+$/', $portalUserId) || 1 !== preg_match('/^[a-z0-9][a-z0-9._-]*$/i', $slug)) {
+            return null;
+        }
+        if (!\in_array($environment, ['staging', 'production'], true)) {
+            return null;
+        }
+        $pdo = self::connect($environment, $logger);
+        if (null === $pdo) {
+            return null;
+        }
+
+        try {
+            $stmt = $pdo->prepare(
+                'SELECT pm.role FROM projects p
+                 JOIN project_members pm ON pm.project_id = p.id
+                 WHERE p.slug = :slug AND pm.user_id = :user_id
+                 LIMIT 1'
+            );
+            $stmt->execute(['slug' => $slug, 'user_id' => (int) $portalUserId]);
+            $role = $stmt->fetchColumn();
+        } catch (\PDOException $e) {
+            $logger->error('PortalProjectResolver: role query failed', ['exception' => $e->getMessage()]);
+
+            return null;
+        }
+
+        return \is_string($role) && \in_array($role, ['owner', 'member'], true) ? $role : null;
     }
 
     /**

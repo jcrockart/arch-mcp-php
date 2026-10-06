@@ -10,7 +10,11 @@
       {"name": "test-code-edit-many", "cmd": ["php", "tests/unit/test-code-edit-many.php"]},
       {"name": "test-code-read", "cmd": ["php", "tests/unit/test-code-read.php"]},
       {"name": "test-project-info", "cmd": ["php", "tests/unit/test-project-info.php"]},
-      {"name": "test-session-discard", "cmd": ["php", "tests/unit/test-session-discard.php"]}
+      {"name": "test-session-discard", "cmd": ["php", "tests/unit/test-session-discard.php"]},
+      {"name": "test-db-sql", "cmd": ["php", "tests/unit/test-db-sql.php"]},
+      {"name": "test-db-migrations", "cmd": ["php", "tests/unit/test-db-migrations.php"]},
+      {"name": "test-db-read", "cmd": ["php", "tests/unit/test-db-read.php"]},
+      {"name": "test-db-tools", "cmd": ["php", "tests/unit/test-db-tools.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }

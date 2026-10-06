@@ -115,6 +115,10 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archCodeReadRange'], 'arch_code_read_range')
         ->addTool([ProjectsTools::class, 'archCodeSearch'], 'arch_code_search')
         ->addTool([ProjectsTools::class, 'archProjectInfo'], 'arch_project_info')
+        ->addTool([ProjectsTools::class, 'archDbReadStaging'], 'db_read_staging')
+        ->addTool([ProjectsTools::class, 'archDbReadProd'], 'db_read_prod')
+        ->addTool([ProjectsTools::class, 'archDbMigrateStaging'], 'db_migrate_staging')
+        ->addTool([ProjectsTools::class, 'archDbMigrateProd'], 'db_migrate_prod')
         ->addTool([ProjectsTools::class, 'archSiteWriteFile'], 'arch_site_write_file')
         ->addTool([ProjectsTools::class, 'archSiteReadFile'], 'arch_site_read_file')
         ->addTool([ProjectsTools::class, 'archSiteListFiles'], 'arch_site_list_files')
@@ -307,7 +311,7 @@ foreach ([
     $portalUserId = $claims['sub'];
     $logger->info('MCP request authorised', ['address' => $environment, 'via' => 'oauth-bearer', 'portal_user_id' => $portalUserId]);
 
-    $tools = new ProjectsTools($logger, $portalUserId, $environment);
+    $tools = new ProjectsTools($logger, $portalUserId, $environment, portalService: true === ($claims['portal_service'] ?? false));
 
     // Partitioned per Portal user AND per environment, same isolation
     // principle as the per-address partitioning below — one
