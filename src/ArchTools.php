@@ -50,6 +50,9 @@ namespace ArchMcp;
 
 use Psr\Log\LoggerInterface;
 
+// Required explicitly, like the other classes added after vendor/ was built.
+require_once __DIR__.'/SessionDiscard.php';
+
 final class ArchTools
 {
     private string $repoPath;
@@ -271,14 +274,30 @@ final class ArchTools
      *
      * Soft-delete: branch renamed under discarded/ prefix with a 7-day
      * grace window (CLI Design §7.2, PROPOSED — not yet confirmed by
-     * James). No trace on main either way. Confirm with the user before
-     * calling this if the session contains work they have not reviewed.
+     * James). Confirm with the user before calling this if the session
+     * contains work they have not reviewed.
+     *
+     * Since 2026-10-06 the session's uncommitted changes inside its lane's
+     * stage paths are first saved as a snapshot commit on the session branch
+     * (see SessionDiscard), so main's working tree is left clean and
+     * `arch session recover` brings the work back. If that snapshot cannot be
+     * made the discard is refused and nothing changes.
      *
      * @return array<string, mixed> exit_code, stdout, stderr from arch.py
      */
     public function archSessionDiscard(): array
     {
-        return $this->runArch(['session', 'discard']);
+        $snap = SessionDiscard::snapshot(fn (array $args): array => $this->execGit($args, $this->repoPath), $this->repoPath);
+        if (true !== $snap['ok']) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'discard refused, the changes in this session could not be saved first: '.$snap['error']];
+        }
+
+        $result = $this->runArch(['session', 'discard']);
+        if ($snap['snapshotted'] && 0 === $result['exit_code']) {
+            $result['stdout'] .= "Uncommitted changes ({$snap['files']} file(s)) were saved on the discarded branch, so main's working tree is clean; `arch session recover` brings them back.\n";
+        }
+
+        return $result;
     }
 
     /**
