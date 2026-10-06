@@ -410,8 +410,11 @@ final class ArchTools
         // reporting success, and a token never granted this lane would
         // still have had a directory listed for it. Fixed 2026-09-01.
         $root = $this->laneRoot('metadata');
-        if (null === $root || !is_dir($root)) {
-            return ['success' => true, 'files' => []];
+        if (null === $root) {
+            return $this->emptyListing("this profile has no 'metadata' lane");
+        }
+        if (!is_dir($root)) {
+            return $this->emptyListing("the 'metadata' lane directory does not exist");
         }
 
         $files = [];
@@ -494,7 +497,7 @@ final class ArchTools
 
         $resolved = $this->resolveCodePath($path);
         if (null === $resolved) {
-            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside this token's code lane"];
+            return ['success' => false, 'error' => $this->codePathError($path)];
         }
 
         $dir = \dirname($resolved);
@@ -525,7 +528,7 @@ final class ArchTools
     {
         $resolved = $this->resolveCodePath($path);
         if (null === $resolved) {
-            return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside this token's code lane"];
+            return ['success' => false, 'error' => $this->codePathError($path)];
         }
 
         if (!is_file($resolved)) {
@@ -552,17 +555,20 @@ final class ArchTools
     public function archCodeListFiles(): array
     {
         if (!isset($this->lanes['code'])) {
-            return ['success' => true, 'files' => []];
+            return $this->emptyListing("this profile has no 'code' lane");
         }
 
         $gatePath = $this->repoPath.'/arch-gate.json';
         if (!is_file($gatePath)) {
-            return ['success' => true, 'files' => []];
+            return $this->emptyListing('arch-gate.json not found in the repository root, so no code paths are defined');
         }
         $gateConfig = json_decode((string) file_get_contents($gatePath), true);
-        $stagePaths = $gateConfig['code']['stage']['paths'] ?? [];
+        if (!\is_array($gateConfig)) {
+            return $this->emptyListing('arch-gate.json is not valid JSON');
+        }
+        $stagePaths = $gateConfig['code']['stage']['paths'] ?? null;
         if (!\is_array($stagePaths)) {
-            return ['success' => true, 'files' => []];
+            return $this->emptyListing('arch-gate.json has no code.stage.paths list');
         }
 
         $files = [];
@@ -594,6 +600,10 @@ final class ArchTools
             }
         }
         sort($files);
+
+        if ([] === $files) {
+            return $this->emptyListing('none of the code.stage.paths in arch-gate.json contain any files');
+        }
 
         return ['success' => true, 'files' => $files];
     }
@@ -775,8 +785,11 @@ final class ArchTools
         // reporting success, and a token never granted this lane would
         // still have had a directory listed for it. Fixed 2026-09-01.
         $root = $this->laneRoot('site');
-        if (null === $root || !is_dir($root)) {
-            return ['success' => true, 'files' => []];
+        if (null === $root) {
+            return $this->emptyListing("this profile has no 'site' lane");
+        }
+        if (!is_dir($root)) {
+            return $this->emptyListing("the 'site' lane directory does not exist");
         }
 
         $files = [];
@@ -896,8 +909,11 @@ final class ArchTools
     public function archAssetsListFiles(): array
     {
         $root = $this->laneRoot('assets');
-        if (null === $root || !is_dir($root)) {
-            return ['success' => true, 'files' => []];
+        if (null === $root) {
+            return $this->emptyListing("this profile has no 'assets' lane");
+        }
+        if (!is_dir($root)) {
+            return $this->emptyListing("the 'assets' lane directory does not exist");
         }
 
         $files = [];
@@ -948,6 +964,31 @@ final class ArchTools
         $ext = strtolower(pathinfo($relativePath, \PATHINFO_EXTENSION));
 
         return '' !== $ext && \in_array($ext, $this->writeExtensions, true);
+    }
+
+    /**
+     * An empty listing that says WHY it is empty. A list that is empty
+     * because the lane or its config is missing used to be indistinguishable
+     * from a lane that simply has no files.
+     *
+     * @return array{success: true, files: array<never>, note: string}
+     */
+    private function emptyListing(string $reason): array
+    {
+        return ['success' => true, 'files' => [], 'note' => $reason];
+    }
+
+    /**
+     * Error text for a code-lane path that resolveCodePath refused. Names the
+     * missing lane when that is the cause, instead of the generic wording.
+     */
+    private function codePathError(string $path): string
+    {
+        if (!isset($this->lanes['code'])) {
+            return "this profile has no 'code' lane, so '{$path}' cannot be used";
+        }
+
+        return "invalid path '{$path}' — must stay inside this token's code lane";
     }
 
     /**
