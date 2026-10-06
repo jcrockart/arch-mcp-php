@@ -13,6 +13,12 @@ require_once __DIR__.'/CodeEdit.php';
 require_once __DIR__.'/CodeEditMany.php';
 require_once __DIR__.'/CodeRead.php';
 require_once __DIR__.'/ProjectInfo.php';
+require_once __DIR__.'/DbSql.php';
+require_once __DIR__.'/DbMigrations.php';
+require_once __DIR__.'/DbRead.php';
+require_once __DIR__.'/DbConnect.php';
+require_once __DIR__.'/DbGuard.php';
+require_once __DIR__.'/DbTools.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -119,6 +125,7 @@ final class ProjectsTools
         private readonly string $portalUserId,
         private readonly string $environment,
         private readonly bool $breakglass = false,
+        private readonly bool $portalService = false,
     ) {
     }
 
@@ -459,6 +466,144 @@ final class ProjectsTools
         $production = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
 
         return ProjectInfo::describe($slug, $this->environment, $staging, $production);
+    }
+
+    // -----------------------------------------------------------------
+    // Database tools: db_read_staging, db_read_prod, db_migrate_staging,
+    // db_migrate_prod. The staging pair works on the project's staging
+    // profile only and the production pair on its production profile only;
+    // a tool never falls back to the other one's database. Production tools
+    // are for the project's Owner, and only Portal's own service credential
+    // can confirm a destructive production migration.
+    // -----------------------------------------------------------------
+
+    /**
+     * Resolve the profile a database tool works on and check who is calling.
+     *
+     * @param 'staging'|'production' $kind
+     *
+     * @return array{profile: array<string, mixed>}|array{success: false, error: string}
+     */
+    private function dbProfile(string $slug, string $kind): array
+    {
+        if ('production' === $kind && 'production' !== $this->environment) {
+            return ['success' => false, 'error' => 'the production database tools are only on the production connector'];
+        }
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
+        if (null === $profile) {
+            return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if ($kind !== ($profile['profile_environment'] ?? null)) {
+            return ['success' => false, 'error' => "this project has no {$kind} profile here, so the {$kind} database tools are not available for it"];
+        }
+        if ('production' === $kind) {
+            $role = $this->portalService ? null : PortalProjectResolver::memberRole($this->portalUserId, $slug, $this->logger, $this->environment);
+            if (!DbGuard::mayUseProd($role, $this->portalService)) {
+                return ['success' => false, 'error' => "the production database tools are for this project's Owner"];
+            }
+        }
+
+        return ['profile' => $profile];
+    }
+
+    /**
+     * Run ONE read-only query (SELECT, SHOW, DESCRIBE or EXPLAIN) against the
+     * project's STAGING database and get the rows back. Nothing can be
+     * changed through it: the statement is checked and runs in a read-only
+     * transaction. One statement per call. Returns at most `maxRows` rows
+     * (default 50, max 200) and says `truncated` when there were more; long
+     * text values are cut at 2000 bytes. To change staging data use
+     * db_migrate_staging with a migration file.
+     *
+     * @param string $slug    project slug
+     * @param string $sql     one SELECT, SHOW, DESCRIBE or EXPLAIN statement
+     * @param int    $maxRows most rows to return (default 50, max 200)
+     */
+    public function archDbReadStaging(string $slug, string $sql, int $maxRows = 50): array
+    {
+        $p = $this->dbProfile($slug, 'staging');
+        if (!isset($p['profile'])) {
+            return $p;
+        }
+        $result = DbTools::read($p['profile'], $sql, $maxRows, false);
+        $this->logger->info('db_read_staging', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'success' => $result['success'] ?? false]);
+
+        return $result;
+    }
+
+    /**
+     * Run ONE read-only query (SELECT, SHOW, DESCRIBE or EXPLAIN) against the
+     * project's PRODUCTION database. For the project's Owner. Same limits as
+     * db_read_staging, plus: a query that names a column or table holding
+     * secrets (password, token, secret, hash, oauth, api key and similar) is
+     * refused, and with SELECT * those columns come back as [redacted].
+     * Production data cannot be changed through this tool.
+     *
+     * @param string $slug    project slug
+     * @param string $sql     one SELECT, SHOW, DESCRIBE or EXPLAIN statement
+     * @param int    $maxRows most rows to return (default 50, max 200)
+     */
+    public function archDbReadProd(string $slug, string $sql, int $maxRows = 50): array
+    {
+        $p = $this->dbProfile($slug, 'production');
+        if (!isset($p['profile'])) {
+            return $p;
+        }
+        $result = DbTools::read($p['profile'], $sql, $maxRows, true);
+        $this->logger->warning('db_read_prod', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'portal_service' => $this->portalService, 'success' => $result['success'] ?? false]);
+
+        return $result;
+    }
+
+    /**
+     * Apply the project's pending migrations (db/migrations/*.sql in the
+     * staging checkout) to its STAGING database, in order, each in its own
+     * transaction, and record them in schema_migrations. Applies all pending,
+     * or those up to and including `upTo`. If any selected migration is
+     * destructive (declared schema-destructive or transactional data, or its
+     * SQL drops, deletes, renames or alters away something) NOTHING is applied
+     * and the reply lists them with their SQL; pass their ids in
+     * `confirmDestructive` to run them. The reply's `safe_up_to` is the last
+     * migration before the first destructive one. To see what is pending
+     * without applying, use arch_core_db_pending_migrations.
+     *
+     * @param string $slug               project slug
+     * @param string $upTo               optional: apply only up to and including this migration id
+     * @param string $confirmDestructive optional: comma-separated ids of destructive migrations to allow
+     */
+    public function archDbMigrateStaging(string $slug, string $upTo = '', string $confirmDestructive = ''): array
+    {
+        $p = $this->dbProfile($slug, 'staging');
+        if (!isset($p['profile'])) {
+            return $p;
+        }
+        $result = DbTools::migrate($p['profile'], 'staging', $upTo, $confirmDestructive, DbGuard::mayConfirmDestructive('staging', $this->portalService));
+        $this->logger->warning('db_migrate_staging', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'success' => $result['success'] ?? false, 'applied' => $result['applied'] ?? []]);
+
+        return $result;
+    }
+
+    /**
+     * Apply the project's pending migrations to its PRODUCTION database. For
+     * the project's Owner. Same behaviour as db_migrate_staging, except that a
+     * destructive migration can NOT be confirmed from a chat: if one is in the
+     * selection nothing is applied and the reply says it must be confirmed in
+     * Portal. `upTo` lets you apply everything before it.
+     *
+     * @param string $slug               project slug
+     * @param string $upTo               optional: apply only up to and including this migration id
+     * @param string $confirmDestructive only honoured when Portal itself is the caller
+     */
+    public function archDbMigrateProd(string $slug, string $upTo = '', string $confirmDestructive = ''): array
+    {
+        $p = $this->dbProfile($slug, 'production');
+        if (!isset($p['profile'])) {
+            return $p;
+        }
+        $result = DbTools::migrate($p['profile'], 'production', $upTo, $confirmDestructive, DbGuard::mayConfirmDestructive('production', $this->portalService));
+        $this->logger->warning('db_migrate_prod', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'portal_service' => $this->portalService, 'success' => $result['success'] ?? false, 'applied' => $result['applied'] ?? []]);
+
+        return $result;
     }
 
     // -----------------------------------------------------------------
