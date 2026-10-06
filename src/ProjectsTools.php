@@ -72,6 +72,15 @@ require_once __DIR__.'/PortalAssetsClient.php';
  * property of WHICH ADDRESS was called, not something a request could
  * influence.
  *
+ * ONE PROFILE PER TOOL, added 2026-10-06: on the production instance a project
+ * can have both a 'staging' and a 'production' profile row in the same
+ * database. Which one a call resolves is fixed per TOOL in this class (the
+ * $kind argument of forSlugProcess/forSlugFile, default 'staging'; the
+ * production pull, the assets tools and the bootstrap fill pass
+ * 'production'), never chosen by the caller. See
+ * PortalProjectResolver::profilePlan() for the exact rule, including the
+ * fallback that keeps projects without a staging row working as before.
+ *
  * BREAK-GLASS: $breakglass is true only for the /projects-token address,
  * which authenticates with a static secret and carries no OAuth token. It
  * no longer affects project resolution (the framework carve-out was removed
@@ -115,9 +124,9 @@ final class ProjectsTools
      *
      * @return ArchTools|array{exit_code: int, stdout: string, stderr: string}
      */
-    private function forSlugProcess(string $slug): ArchTools|array
+    private function forSlugProcess(string $slug, string $kind = 'staging'): ArchTools|array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
         if (null === $profile) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -131,9 +140,9 @@ final class ProjectsTools
      *
      * @return ArchTools|array{success: false, error: string}
      */
-    private function forSlugFile(string $slug): ArchTools|array
+    private function forSlugFile(string $slug, string $kind = 'staging'): ArchTools|array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -148,9 +157,9 @@ final class ProjectsTools
      * Only ArchTools instances built by THIS class ever need this check
      * (ArchTools itself has no session_tools property to check).
      */
-    private function requireSessionTools(string $slug, ArchTools $tools): ?array
+    private function requireSessionTools(string $slug, ArchTools $tools, string $kind = 'staging'): ?array
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
         if (null === $profile || !$profile['session_tools']) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this project's profile does not grant session tools"];
         }
@@ -174,7 +183,7 @@ final class ProjectsTools
      */
     private function portalAssets(string $slug): PortalAssetsClient|array|null
     {
-        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment);
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
         }
@@ -453,7 +462,7 @@ final class ProjectsTools
             return $client;
         }
         if (null === $client) {
-            $t = $this->forSlugFile($slug);
+            $t = $this->forSlugFile($slug, 'production');
 
             return \is_array($t) ? $t : $t->archAssetsReadFile($path);
         }
@@ -476,7 +485,7 @@ final class ProjectsTools
             return $client;
         }
         if (null === $client) {
-            $t = $this->forSlugFile($slug);
+            $t = $this->forSlugFile($slug, 'production');
 
             return \is_array($t) ? $t : $t->archAssetsListFiles();
         }
@@ -528,7 +537,7 @@ final class ProjectsTools
 
     public function archCoreGitPullFastForward(string $slug): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'production');
 
         return \is_array($t) ? $t : $t->archCoreGitPullFastForward();
     }
@@ -596,7 +605,7 @@ final class ProjectsTools
 
     public function archBootstrapFillInceptionRow(string $slug, string $targetSlug, string $token, string $configJson, string $gitRemote = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'production');
 
         return \is_array($t) ? $t : $t->archBootstrapFillInceptionRow($targetSlug, $token, $configJson, $gitRemote);
     }

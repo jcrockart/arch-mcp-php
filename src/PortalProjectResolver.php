@@ -56,6 +56,12 @@ namespace ArchMcp;
  * indistinguishable, same reasoning as ArchProfiles' own 404-not-403
  * posture), or a root that doesn't exist on disk all resolve to null.
  * 
+ * ONE PORTAL DATABASE, TWO PROFILES, added 2026-10-06: on the production
+ * Portal instance a project can have up to two profile rows (environment
+ * 'staging' and 'production') in the same database. Which one a call uses is
+ * decided by the TOOL, never by the caller: see profilePlan(). The staging
+ * Portal instance resolves its own database exactly as before.
+ *
  * NO FRAMEWORK CARVE-OUT, from 2026-10-02: framework projects (arch-core,
  * arch-mcp, arch-portal, arch-bootstrap) are resolved exactly like any
  * other project. What the project_profiles row says is what the caller
@@ -101,7 +107,7 @@ final class PortalProjectResolver
      *
      * @return array{label: string, kind: string, seed: bool, root: string, lanes: array<string, string>, session_tools: bool, write_extensions: list<string>|null, pull_allowed: bool, pull_branch: string, push_allowed: bool, push_branch: string, db_apply_allowed: bool, bootstrap_fill_allowed: bool, bootstrap_fill_portal_url: string|null, dependency_manager: string, dependency_exclude: list<string>|null}|null
      */
-    public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, string $environment): ?array
+    public static function resolve(string $portalUserId, string $slug, \Psr\Log\LoggerInterface $logger, string $environment, string $kind = 'production'): ?array
     {
         if (1 !== preg_match('/^[0-9]+$/', $portalUserId)) {
             return null;
@@ -119,6 +125,13 @@ final class PortalProjectResolver
             return null;
         }
 
+        if (!\in_array($kind, ['staging', 'production'], true)) {
+            $logger->error('PortalProjectResolver: unknown profile kind requested', ['kind' => $kind]);
+
+            return null;
+        }
+        [$preferred, $allowFallback] = self::profilePlan($environment, $kind);
+
         $pdo = self::connect($environment, $logger);
         if (null === $pdo) {
             return null;
@@ -132,12 +145,15 @@ final class PortalProjectResolver
                         pp.bootstrap_fill_allowed, pp.bootstrap_fill_portal_url
                  FROM projects p
                  JOIN project_members pm ON pm.project_id = p.id
-                 JOIN project_profiles pp ON pp.project_id = p.id AND pp.environment = :environment
+                 JOIN project_profiles pp ON pp.project_id = p.id AND pp.environment IN (:env_a, :env_b)
                  WHERE p.slug = :slug AND pm.user_id = :user_id
+                 ORDER BY (pp.environment = :env_c) DESC
                  LIMIT 1'
             );
             $stmt->execute([
-                'environment' => $environment,
+                'env_a' => $preferred,
+                'env_b' => $allowFallback ? 'production' : $preferred,
+                'env_c' => $preferred,
                 'slug' => $slug,
                 'user_id' => (int) $portalUserId,
             ]);
@@ -266,6 +282,41 @@ final class PortalProjectResolver
             'dependency_manager' => $dependencyManager,
             'dependency_exclude' => $dependencyExclude,
         ];
+    }
+
+    /**
+     * Which of a project's profile rows a tool call uses. Decided by the TOOL
+     * (its $kind), never by the caller. Added 2026-10-06.
+     *
+     * On the production Portal instance a project can have both a 'staging'
+     * and a 'production' profile row in the same database:
+     *   - kind 'production' (promotion: the production pull, and the
+     *     project-level assets and bootstrap-fill tools): the production row,
+     *     strictly.
+     *   - kind 'staging' (everything that edits or inspects the working copy:
+     *     sessions, code, git reads, push, migrations, dependency install):
+     *     the staging row, falling back to the production row ONLY when the
+     *     project has no staging row at all. That fallback is exactly what
+     *     those tools resolved to before this change, so nothing widens.
+     * On the staging Portal instance nothing changes: only that database's
+     * rows of environment 'staging' are ever used, so a 'production' row
+     * sitting in the staging database can never be reached from there.
+     *
+     * @param 'staging'|'production' $portalEnvironment which Portal database the address talks to
+     * @param 'staging'|'production' $kind              which checkout the tool works on
+     *
+     * @return array{0: string, 1: bool} [profile environment to prefer, may fall back to production]
+     */
+    public static function profilePlan(string $portalEnvironment, string $kind): array
+    {
+        if ('production' !== $portalEnvironment) {
+            return [$portalEnvironment, false];
+        }
+        if ('staging' === $kind) {
+            return ['staging', true];
+        }
+
+        return ['production', false];
     }
 
     /**

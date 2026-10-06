@@ -2,7 +2,8 @@
   "code": {
     "gate": [
       {"name": "lint", "cmd": ["bash", "-c", "git diff --name-only --diff-filter=ACM HEAD -- '*.php' | xargs -r -n1 php -l"]},
-      {"name": "test-scoping", "cmd": ["php", "tests/unit/test-scoping.php"]}
+      {"name": "test-scoping", "cmd": ["php", "tests/unit/test-scoping.php"]},
+      {"name": "test-profile-plan", "cmd": ["php", "tests/unit/test-profile-plan.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "composer.json", "composer.lock"]}
   }
