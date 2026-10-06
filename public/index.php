@@ -110,6 +110,7 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archCodeWriteFile'], 'arch_code_write_file')
         ->addTool([ProjectsTools::class, 'archCodeReadFile'], 'arch_code_read_file')
         ->addTool([ProjectsTools::class, 'archCodeListFiles'], 'arch_code_list_files')
+        ->addTool([ProjectsTools::class, 'archCodeEditFile'], 'arch_code_edit_file')
         ->addTool([ProjectsTools::class, 'archSiteWriteFile'], 'arch_site_write_file')
         ->addTool([ProjectsTools::class, 'archSiteReadFile'], 'arch_site_read_file')
         ->addTool([ProjectsTools::class, 'archSiteListFiles'], 'arch_site_list_files')
