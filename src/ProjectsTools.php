@@ -8,6 +8,7 @@ use Psr\Log\LoggerInterface;
 // classes explicitly: vendor/ may carry a classmap-authoritative autoloader
 // that cannot see a class added after it was built.
 require_once __DIR__.'/PortalAssetsClient.php';
+require_once __DIR__.'/ProdState.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -76,8 +77,8 @@ require_once __DIR__.'/PortalAssetsClient.php';
  * can have both a 'staging' and a 'production' profile row in the same
  * database. Which one a call resolves is fixed per TOOL in this class (the
  * $kind argument of forSlugProcess/forSlugFile, default 'staging'; the
- * production pull, the assets tools and the bootstrap fill pass
- * 'production'), never chosen by the caller. See
+ * production pull, the assets tools, the bootstrap fill and
+ * archProdState pass 'production'), never chosen by the caller. See
  * PortalProjectResolver::profilePlan() for the exact rule, including the
  * fallback that keeps projects without a staging row working as before.
  *
@@ -547,6 +548,41 @@ final class ProjectsTools
         $t = $this->forSlugProcess($slug);
 
         return \is_array($t) ? $t : $t->archCoreGitPushOrigin($expectedHead);
+    }
+
+    /**
+     * Report where this project's PRODUCTION checkout stands against origin:
+     * fetches origin first, then returns its branch, HEAD, whether the working
+     * tree is clean, how far ahead of / behind origin/<pull_branch> it is, and
+     * (when behind) the incoming commits and changed files. Pass includeDiff
+     * true to also get the incoming diff, truncated at 200,000 bytes.
+     *
+     * Always the production profile's checkout, never staging, whatever the
+     * project's staging row says: this is what the Promote to production check
+     * and "Review & pull" must use, because arch_core_git_status/diff/log/fetch
+     * report the STAGING checkout when a project has a staging profile.
+     *
+     * `up_to_date` is true only when the fetch worked and production is not
+     * behind. If the fetch failed it is null (unknown), with `fetch_ok` false
+     * and the reason in `fetch_error` — never read null as up to date.
+     * Read-only apart from the fetch, which only updates origin refs.
+     *
+     * @param string $slug        project slug
+     * @param bool   $includeDiff also return the incoming diff (default false)
+     */
+    public function archProdState(string $slug, bool $includeDiff = false): array
+    {
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
+        if (null === $profile) {
+            return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (!isset($profile['lanes']['core'])) {
+            return ['success' => false, 'error' => "this project's production profile has no core lane"];
+        }
+        $subdir = $profile['lanes']['core'];
+        $root = '' === $subdir ? $profile['root'] : $profile['root'].'/'.$subdir;
+
+        return ProdState::report($root, $profile['pull_branch'], $includeDiff, $this->logger);
     }
 
     // -----------------------------------------------------------------

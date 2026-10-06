@@ -124,6 +124,7 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archCoreGitFetch'], 'arch_core_git_fetch')
         ->addTool([ProjectsTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull')
         ->addTool([ProjectsTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push')
+        ->addTool([ProjectsTools::class, 'archProdState'], 'arch_prod_state')
         ->addTool([ProjectsTools::class, 'archCoreDbPendingMigrations'], 'arch_core_db_pending_migrations')
         ->addTool([ProjectsTools::class, 'archCoreDbApplyMigrations'], 'arch_core_db_apply_migrations')
         ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
