@@ -6,7 +6,10 @@
       {"name": "test-profile-plan", "cmd": ["php", "tests/unit/test-profile-plan.php"]},
       {"name": "test-honest-empty", "cmd": ["php", "tests/unit/test-honest-empty.php"]},
       {"name": "test-prod-state", "cmd": ["php", "tests/unit/test-prod-state.php"]},
-      {"name": "test-code-edit", "cmd": ["php", "tests/unit/test-code-edit.php"]}
+      {"name": "test-code-edit", "cmd": ["php", "tests/unit/test-code-edit.php"]},
+      {"name": "test-code-edit-many", "cmd": ["php", "tests/unit/test-code-edit-many.php"]},
+      {"name": "test-code-read", "cmd": ["php", "tests/unit/test-code-read.php"]},
+      {"name": "test-project-info", "cmd": ["php", "tests/unit/test-project-info.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }
