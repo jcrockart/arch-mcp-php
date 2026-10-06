@@ -10,6 +10,9 @@ use Psr\Log\LoggerInterface;
 require_once __DIR__.'/PortalAssetsClient.php';
 require_once __DIR__.'/ProdState.php';
 require_once __DIR__.'/CodeEdit.php';
+require_once __DIR__.'/CodeEditMany.php';
+require_once __DIR__.'/CodeRead.php';
+require_once __DIR__.'/ProjectInfo.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -357,6 +360,105 @@ final class ProjectsTools
         $t = $this->forSlugFile($slug);
 
         return \is_array($t) ? $t : CodeEdit::run($t, $path, $old, $new);
+    }
+
+    /**
+     * Make several exact-text edits in one call, across one or more
+     * code-lane files. `editsJson` is a JSON list of objects, each with
+     * string fields "path", "old" and "new", for example
+     * [{"path":"src/a.php","old":"$x = 1;","new":"$x = 2;"}]. Every edit
+     * follows arch_code_edit_file: `old` must match exactly once. Edits to
+     * the same file are applied in order, each on the result of the one
+     * before. ALL-OR-NOTHING ON MATCHING: if any edit fails to match
+     * exactly once, nothing is written and the reply names the failing edit
+     * by its position (1 = first). At most 50 edits per call. Needs an
+     * active session on the code lane and obeys the same path and file-type
+     * limits as arch_code_write_file; if a write is refused part way
+     * (file types are checked per file) the reply lists the files already
+     * written, which are not rolled back. The reply gives counts and line
+     * numbers, never file content.
+     *
+     * @param string $slug      project slug
+     * @param string $editsJson JSON list of {"path": ..., "old": ..., "new": ...}
+     */
+    public function archCodeEditMany(string $slug, string $editsJson): array
+    {
+        $t = $this->forSlugFile($slug);
+
+        return \is_array($t) ? $t : CodeEditMany::runJson($t, $editsJson);
+    }
+
+    /**
+     * Read a range of lines from a code-lane file instead of the whole
+     * file. Lines are 1-based and inclusive. `end` left at 0 means 200
+     * lines from `start`; a single call returns at most 400 lines (the reply
+     * says `capped` and `more_after` so you can continue from end + 1). The
+     * reply has `total_lines` for the file and the raw text of the range in
+     * `content`, unnumbered and byte for byte, so it can be pasted into an
+     * `old` string. Needs no session; obeys the same path limits as
+     * arch_code_read_file.
+     *
+     * @param string $slug  project slug
+     * @param string $path  file path inside the code lane, e.g. "src/ArchTools.php"
+     * @param int    $start first line to read (1-based, default 1)
+     * @param int    $end   last line to read (inclusive); 0 or omitted = 200 lines from start
+     */
+    public function archCodeReadRange(string $slug, string $path, int $start = 1, int $end = 0): array
+    {
+        $t = $this->forSlugFile($slug);
+
+        return \is_array($t) ? $t : CodeRead::range($t, $path, $start, $end);
+    }
+
+    /**
+     * Find where some text appears across the code lane's files. A plain
+     * literal substring match (no regular expressions, so characters like
+     * ( . * mean themselves), case-sensitive unless ignoreCase is true.
+     * Returns matches as {path, line, text} (text is the matching line,
+     * cut at 300 characters), at most maxResults of them (default 50, up to
+     * 200); `truncated` says if more existed. Pass `pathPrefix` (e.g. "src/")
+     * to search only files whose path starts with it. Binary or very large
+     * files are skipped and listed under `skipped`. Only files the code
+     * lane can read are searched. Needs no session. Follow up with
+     * arch_code_read_range to see the surrounding lines.
+     *
+     * @param string $slug       project slug
+     * @param string $text       the exact text to look for (not a pattern)
+     * @param string $pathPrefix optional: only search paths starting with this
+     * @param bool   $ignoreCase match upper and lower case alike (default false)
+     * @param int    $maxResults most matches to return (default 50, max 200)
+     */
+    public function archCodeSearch(string $slug, string $text, string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = 50): array
+    {
+        $t = $this->forSlugFile($slug);
+
+        return \is_array($t) ? $t : CodeRead::search($t, $text, $pathPrefix, $ignoreCase, $maxResults);
+    }
+
+    /**
+     * Everything a chat needs to know about a project before starting work,
+     * in one call: for the staging profile (what the editing tools use) and
+     * the production profile (what pull and assets use), the lanes it has,
+     * whether sessions, pull, push, database apply and dependency install
+     * are allowed, which file types may be written, the code lane's stage
+     * paths from arch-gate.json, the checkout's branch, short HEAD and
+     * whether it has uncommitted changes, and any active session (lane,
+     * branch, start time). `same_checkout` is true when staging and
+     * production are the same directory (a project with no separate staging
+     * row). Read-only, no fetch: for how far production is behind origin use
+     * arch_prod_state. Server paths are never shown.
+     *
+     * @param string $slug project slug
+     */
+    public function archProjectInfo(string $slug): array
+    {
+        $staging = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'staging');
+        if (null === $staging) {
+            return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        $production = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
+
+        return ProjectInfo::describe($slug, $this->environment, $staging, $production);
     }
 
     // -----------------------------------------------------------------
