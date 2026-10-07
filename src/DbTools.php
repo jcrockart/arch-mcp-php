@@ -3,10 +3,10 @@
 namespace ArchMcp;
 
 /**
- * The work behind db_read_staging, db_read_prod, db_migrate_staging and
- * db_migrate_prod. ProjectsTools decides WHO may call and which profile to
- * use (DbGuard, the resolver); this class does the database part for an
- * already-resolved profile.
+ * The work behind db_read_staging, db_read_prod, db_pending_staging,
+ * db_pending_prod, db_migrate_staging and db_migrate_prod. ProjectsTools
+ * decides WHO may call and which profile to use (DbGuard, the resolver); this
+ * class does the database part for an already-resolved profile.
  */
 final class DbTools
 {
@@ -115,5 +115,64 @@ final class DbTools
         }
 
         return $result;
+    }
+
+    /**
+     * List the migrations declared in db/migrations but not yet recorded in
+     * the database's schema_migrations (a missing table means all of them).
+     * Read-only: nothing is applied or written. Each entry says whether
+     * applying it would count as destructive, and why.
+     *
+     * @param array<string, mixed> $profile
+     * @param string               $kind    'staging' or 'production'
+     *
+     * @return array<string, mixed>
+     */
+    public static function pending(array $profile, string $kind): array
+    {
+        $root = self::coreRoot($profile);
+        if (null === $root) {
+            return ['success' => false, 'error' => 'this project has no core lane'];
+        }
+        $conn = DbConnect::connect($root);
+        if (!isset($conn['pdo'])) {
+            return ['success' => false, 'error' => $conn['error'] ?? 'could not connect'];
+        }
+
+        try {
+            $declared = DbMigrations::listDeclared($root.'/db/migrations');
+            $pending = DbMigrations::pending($root.'/db/migrations', $conn['pdo']);
+        } catch (\RuntimeException $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+
+        $list = [];
+        foreach ($pending as $m) {
+            $reason = DbMigrations::destructiveReason($m);
+            $entry = [
+                'id' => $m['id'],
+                'type' => $m['type'] ?? null,
+                'data_class' => $m['data-class'] ?? null,
+                'description' => $m['description'] ?? null,
+                'destructive' => null !== $reason,
+            ];
+            if (null !== $reason) {
+                $entry['reason'] = $reason;
+            }
+            $list[] = $entry;
+        }
+
+        $out = [
+            'success' => true,
+            'environment' => $kind,
+            'declared' => \count($declared),
+            'pending_count' => \count($list),
+            'pending' => $list,
+        ];
+        if ([] === $list) {
+            $out['note'] = 'nothing pending';
+        }
+
+        return $out;
     }
 }
