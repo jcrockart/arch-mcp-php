@@ -30,6 +30,15 @@ namespace ArchMcp;
  * where discard refused with "Author identity unknown"). The commit now
  * supplies a fallback for whichever of the two is missing, and never
  * overrides one that is configured.
+ *
+ * BRANCH-NAME COLLISION: arch.py renames the session branch to
+ * discarded/<name> and fails if that already exists (a session name reused
+ * after an earlier discard within the 7-day grace window). It also tags the
+ * branch discard-marker/discarded/<name>/<epoch>, and its purge deletes the
+ * branch NAMED in an old tag once that tag is 7 days old, which would delete
+ * the newer branch of the same name. freeDiscardName() moves any existing
+ * discarded/<name> branch, and its marker tags, to a unique name first. Done
+ * here, not in arch.py, for the same reason as the snapshot.
  */
 final class SessionDiscard
 {
@@ -114,5 +123,50 @@ final class SessionDiscard
         }
 
         return ['ok' => true, 'snapshotted' => true, 'files' => \count($changed)];
+    }
+
+    /**
+     * Make discarded/<session branch> free for arch.py. An older safety branch
+     * of that name is renamed to discarded/<name>-<epoch>[-n] and its marker
+     * tags are re-pointed to the new name (keeping their original time, so the
+     * 7-day purge still applies to the old work and never to the new).
+     *
+     * @param callable(list<string>): array{exit_code: int, stdout: string, stderr: string} $git
+     *
+     * @return array{ok: true, moved: ?string}|array{ok: false, error: string}
+     */
+    public static function freeDiscardName(callable $git, string $repoPath): array
+    {
+        $sessionFile = $repoPath.'/.arch-session.json';
+        if (!is_file($sessionFile)) {
+            return ['ok' => true, 'moved' => null];
+        }
+        $session = json_decode((string) file_get_contents($sessionFile), true);
+        if (!\is_array($session) || !\is_string($session['branch'] ?? null) || '' === $session['branch']) {
+            return ['ok' => true, 'moved' => null];
+        }
+        $target = 'discarded/'.$session['branch'];
+        if (0 !== $git(['rev-parse', '--verify', '--quiet', 'refs/heads/'.$target])['exit_code']) {
+            return ['ok' => true, 'moved' => null];
+        }
+
+        $stamp = (string) time();
+        $new = $target.'-'.$stamp;
+        for ($n = 2; 0 === $git(['rev-parse', '--verify', '--quiet', 'refs/heads/'.$new])['exit_code'] && $n < 100; ++$n) {
+            $new = $target.'-'.$stamp.'-'.$n;
+        }
+        $rename = $git(['branch', '-m', $target, $new]);
+        if (0 !== $rename['exit_code']) {
+            return ['ok' => false, 'error' => "an older discarded branch '{$target}' is in the way and could not be renamed: ".trim($rename['stderr'])];
+        }
+        $tags = $git(['tag', '--list', 'discard-marker/'.$target.'/*']);
+        foreach (array_filter(explode("\n", $tags['stdout']), static fn (string $t): bool => '' !== trim($t)) as $tag) {
+            $tag = trim($tag);
+            $epoch = substr($tag, (int) strrpos($tag, '/') + 1);
+            $git(['tag', 'discard-marker/'.$new.'/'.$epoch, $new]);
+            $git(['tag', '-d', $tag]);
+        }
+
+        return ['ok' => true, 'moved' => $new];
     }
 }

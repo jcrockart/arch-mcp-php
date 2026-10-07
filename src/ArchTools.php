@@ -292,7 +292,16 @@ final class ArchTools
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'discard refused, the changes in this session could not be saved first: '.$snap['error']];
         }
 
+        $free = SessionDiscard::freeDiscardName(fn (array $args): array => $this->execGit($args, $this->repoPath), $this->repoPath);
+        if (true !== $free['ok']) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'discard refused: '.$free['error']];
+        }
+
         $result = $this->runArch(['session', 'discard']);
+        clearstatcache(); // arch.py removed the session file; PHP must not answer from its stat cache
+        if (null !== $free['moved'] && 0 === $result['exit_code']) {
+            $result['stdout'] .= "An older discarded branch with the same name was kept as '{$free['moved']}'.\n";
+        }
         if ($snap['snapshotted'] && 0 === $result['exit_code']) {
             $result['stdout'] .= "Uncommitted changes ({$snap['files']} file(s)) were saved on the discarded branch, so main's working tree is clean; `arch session recover` brings them back.\n";
         }

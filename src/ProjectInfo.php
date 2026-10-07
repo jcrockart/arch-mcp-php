@@ -35,6 +35,10 @@ final class ProjectInfo
             'production' => null === $production ? null : self::view($production),
         ];
         $out['same_checkout'] = null !== $production && self::checkoutDir($staging) === self::checkoutDir($production);
+        if ('production' === ($staging['profile_environment'] ?? null)) {
+            $out['staging_view_is_production'] = true;
+            $out['staging_note'] = 'this project has no staging profile row, so the staging view is the production profile; the staging database tools are not available for it';
+        }
         if (null === $production) {
             $out['note'] = 'no production profile row resolves for this project from this address';
         }
@@ -51,6 +55,7 @@ final class ProjectInfo
     {
         $dir = self::checkoutDir($p);
         $view = [
+            'profile_environment' => $p['profile_environment'] ?? null,
             'lanes' => array_keys((array) ($p['lanes'] ?? [])),
             'session_tools' => (bool) ($p['session_tools'] ?? false),
             'write_extensions' => $p['write_extensions'] ?? null,
