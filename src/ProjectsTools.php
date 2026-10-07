@@ -469,12 +469,13 @@ final class ProjectsTools
     }
 
     // -----------------------------------------------------------------
-    // Database tools: db_read_staging, db_read_prod, db_migrate_staging,
-    // db_migrate_prod. The staging pair works on the project's staging
-    // profile only and the production pair on its production profile only;
-    // a tool never falls back to the other one's database. Production tools
-    // are for the project's Owner, and only Portal's own service credential
-    // can confirm a destructive production migration.
+    // Database tools: db_read_staging, db_read_prod, db_pending_staging,
+    // db_pending_prod, db_migrate_staging, db_migrate_prod. The staging tools
+    // work on the project's staging profile only and the production tools on
+    // its production profile only; a tool never falls back to the other one's
+    // database. Production tools are for the project's Owner, and only
+    // Portal's own service credential can confirm a destructive production
+    // migration.
     // -----------------------------------------------------------------
 
     /**
@@ -556,6 +557,44 @@ final class ProjectsTools
     }
 
     /**
+     * List the migrations that are declared in the project's db/migrations
+     * but not yet applied to its STAGING database. Read-only. Each entry has
+     * id, type, data_class, description and whether applying it would count
+     * as destructive (with the reason). To apply them use db_migrate_staging.
+     *
+     * @param string $slug project slug
+     */
+    public function archDbPendingStaging(string $slug): array
+    {
+        $p = $this->dbProfile($slug, 'staging');
+        if (!isset($p['profile'])) {
+            return $p;
+        }
+
+        return DbTools::pending($p['profile'], 'staging');
+    }
+
+    /**
+     * List the migrations that are declared in the project's db/migrations
+     * but not yet applied to its PRODUCTION database. For the project's
+     * Owner. Read-only, and always about production, whatever the staging
+     * database looks like. To apply them use db_migrate_prod.
+     *
+     * @param string $slug project slug
+     */
+    public function archDbPendingProd(string $slug): array
+    {
+        $p = $this->dbProfile($slug, 'production');
+        if (!isset($p['profile'])) {
+            return $p;
+        }
+        $result = DbTools::pending($p['profile'], 'production');
+        $this->logger->info('db_pending_prod', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'portal_service' => $this->portalService, 'success' => $result['success'] ?? false]);
+
+        return $result;
+    }
+
+    /**
      * Apply the project's pending migrations (db/migrations/*.sql in the
      * staging checkout) to its STAGING database, in order, each in its own
      * transaction, and record them in schema_migrations. Applies all pending,
@@ -565,7 +604,7 @@ final class ProjectsTools
      * and the reply lists them with their SQL; pass their ids in
      * `confirmDestructive` to run them. The reply's `safe_up_to` is the last
      * migration before the first destructive one. To see what is pending
-     * without applying, use arch_core_db_pending_migrations.
+     * without applying, use db_pending_staging.
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id
@@ -588,7 +627,8 @@ final class ProjectsTools
      * the project's Owner. Same behaviour as db_migrate_staging, except that a
      * destructive migration can NOT be confirmed from a chat: if one is in the
      * selection nothing is applied and the reply says it must be confirmed in
-     * Portal. `upTo` lets you apply everything before it.
+     * Portal. `upTo` lets you apply everything before it. To see what is
+     * pending first, use db_pending_prod.
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id

@@ -65,6 +65,20 @@ mkdir($d.'/sub');
 check('a real subdir works', $d.'/sub' === DbTools::coreRoot(['root' => $d, 'lanes' => ['core' => 'sub']]));
 check('a lane that climbs out is refused', null === DbTools::coreRoot(['root' => $d.'/sub', 'lanes' => ['core' => '..']]));
 
+echo "pending(): lists what is declared but not applied, writes nothing\n";
+$r = DbTools::pending($profile, 'production');
+check('success, environment, counts', true === $r['success'] && 'production' === $r['environment'] && 3 === $r['declared'] && 3 === $r['pending_count']);
+check('ids in order', ['a', 'b', 'c'] === array_column($r['pending'], 'id'));
+check('entry carries type and description', 'schema-additive' === $r['pending'][0]['type'] && 'test a' === $r['pending'][0]['description']);
+check('only the destructive one is flagged, with its reason', [false, false, true] === array_column($r['pending'], 'destructive') && str_contains($r['pending'][2]['reason'], 'schema-destructive') && !isset($r['pending'][0]['reason']));
+check('no sql in the listing', !isset($r['pending'][2]['sql']));
+check('read-only: no tables created, nothing recorded', [] === tables($d) && 0 === (int) (new PDO('sqlite:'.$d.'/app.sqlite'))->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn());
+check('no core lane is a clean error', false === DbTools::pending(['root' => $d, 'lanes' => []], 'staging')['success']);
+file_put_contents($d.'/db/migrations/0004_dup.sql', mig('a', 'schema-additive', 'CREATE TABLE z (id INTEGER);'));
+$r = DbTools::pending($profile, 'staging');
+check('a duplicate id is reported, not hidden', false === $r['success'] && str_contains($r['error'], 'duplicate migration id'));
+unlink($d.'/db/migrations/0004_dup.sql');
+
 echo "migrate(): destructive in the selection stops everything\n";
 $r = DbTools::migrate($profile, 'staging', '', '', true);
 check('refused, nothing applied', false === $r['success'] && [] === tables($d) && 1 === \count($r['destructive']) && 'c' === $r['destructive'][0]['id']);
@@ -91,6 +105,10 @@ check('production marker recorded', 'agent:db_migrate_prod' === $by);
 echo "migrate(): nothing pending\n";
 $r = DbTools::migrate($profile, 'staging', '', '', true);
 check('success, empty', true === $r['success'] && [] === $r['applied'] && 0 === $r['pending_after']);
+
+echo "pending(): follows the database, after an apply\n";
+$r = DbTools::pending($profile, 'staging');
+check('nothing pending once all are applied', true === $r['success'] && 0 === $r['pending_count'] && [] === $r['pending'] && 'nothing pending' === $r['note'] && 3 === $r['declared']);
 
 echo "read()\n";
 $r = DbTools::read($profile, 'SELECT id FROM schema_migrations ORDER BY id', 10, true);

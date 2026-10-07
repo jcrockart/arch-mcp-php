@@ -117,6 +117,8 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archProjectInfo'], 'arch_project_info')
         ->addTool([ProjectsTools::class, 'archDbReadStaging'], 'db_read_staging')
         ->addTool([ProjectsTools::class, 'archDbReadProd'], 'db_read_prod')
+        ->addTool([ProjectsTools::class, 'archDbPendingStaging'], 'db_pending_staging')
+        ->addTool([ProjectsTools::class, 'archDbPendingProd'], 'db_pending_prod')
         ->addTool([ProjectsTools::class, 'archDbMigrateStaging'], 'db_migrate_staging')
         ->addTool([ProjectsTools::class, 'archDbMigrateProd'], 'db_migrate_prod')
         ->addTool([ProjectsTools::class, 'archSiteWriteFile'], 'arch_site_write_file')
