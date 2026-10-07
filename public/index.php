@@ -112,7 +112,6 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archCodeListFiles'], 'arch_code_list_files')
         ->addTool([ProjectsTools::class, 'archCodeEditFile'], 'arch_code_edit_file')
         ->addTool([ProjectsTools::class, 'archCodeEditMany'], 'arch_code_edit_many')
-        ->addTool([ProjectsTools::class, 'archCodeReadRange'], 'arch_code_read_range')
         ->addTool([ProjectsTools::class, 'archCodeSearch'], 'arch_code_search')
         ->addTool([ProjectsTools::class, 'archProjectInfo'], 'arch_project_info')
         ->addTool([ProjectsTools::class, 'archDbReadStaging'], 'db_read_staging')

@@ -332,11 +332,32 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCodeWriteFile($path, $content);
     }
 
-    public function archCodeReadFile(string $slug, string $path): array
+    /**
+     * Read a code-lane file. With no `start` or `end` the whole file comes
+     * back as before. Pass `start` and/or `end` to read just a range of
+     * lines instead: lines are 1-based and inclusive; `end` left at 0 means
+     * 200 lines from `start`; one call returns at most 400 lines (the reply
+     * says `capped` and `more_after` so you can continue from end + 1). A
+     * range reply has `total_lines` and the raw text in `content`,
+     * unnumbered and byte for byte, so it can be pasted into an `old`
+     * string. Needs no session.
+     *
+     * @param string $slug  project slug
+     * @param string $path  file path inside the code lane, e.g. "src/ArchTools.php"
+     * @param int    $start optional: first line to read (1-based); 0 or omitted with no end = whole file
+     * @param int    $end   optional: last line to read (inclusive); 0 = 200 lines from start
+     */
+    public function archCodeReadFile(string $slug, string $path, int $start = 0, int $end = 0): array
     {
         $t = $this->forSlugFile($slug);
+        if (\is_array($t)) {
+            return $t;
+        }
+        if ($start > 0 || $end > 0) {
+            return CodeRead::range($t, $path, max(1, $start), $end);
+        }
 
-        return \is_array($t) ? $t : $t->archCodeReadFile($path);
+        return $t->archCodeReadFile($path);
     }
 
     public function archCodeListFiles(string $slug): array
@@ -395,27 +416,7 @@ final class ProjectsTools
         return \is_array($t) ? $t : CodeEditMany::runJson($t, $editsJson);
     }
 
-    /**
-     * Read a range of lines from a code-lane file instead of the whole
-     * file. Lines are 1-based and inclusive. `end` left at 0 means 200
-     * lines from `start`; a single call returns at most 400 lines (the reply
-     * says `capped` and `more_after` so you can continue from end + 1). The
-     * reply has `total_lines` for the file and the raw text of the range in
-     * `content`, unnumbered and byte for byte, so it can be pasted into an
-     * `old` string. Needs no session; obeys the same path limits as
-     * arch_code_read_file.
-     *
-     * @param string $slug  project slug
-     * @param string $path  file path inside the code lane, e.g. "src/ArchTools.php"
-     * @param int    $start first line to read (1-based, default 1)
-     * @param int    $end   last line to read (inclusive); 0 or omitted = 200 lines from start
-     */
-    public function archCodeReadRange(string $slug, string $path, int $start = 1, int $end = 0): array
-    {
-        $t = $this->forSlugFile($slug);
-
-        return \is_array($t) ? $t : CodeRead::range($t, $path, $start, $end);
-    }
+    // arch_code_read_range was folded into arch_code_read_file (start/end).
 
     /**
      * Find where some text appears across the code lane's files. A plain
@@ -427,7 +428,7 @@ final class ProjectsTools
      * to search only files whose path starts with it. Binary or very large
      * files are skipped and listed under `skipped`. Only files the code
      * lane can read are searched. Needs no session. Follow up with
-     * arch_code_read_range to see the surrounding lines.
+     * arch_code_read_file with start/end to see the surrounding lines.
      *
      * @param string $slug       project slug
      * @param string $text       the exact text to look for (not a pattern)
