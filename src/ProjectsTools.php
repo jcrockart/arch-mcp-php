@@ -647,29 +647,11 @@ final class ProjectsTools
     }
 
     // -----------------------------------------------------------------
-    // Site lane — not session-gated, matching ArchTools' own design.
+    // The site lane tools (arch_site_*) were removed from this server on
+    // 2026-10-07. They wrote files with no session, no gate and no commit,
+    // which is how work ended up uncommitted. App files go through
+    // code-lane sessions instead.
     // -----------------------------------------------------------------
-
-    public function archSiteWriteFile(string $slug, string $path, string $content): array
-    {
-        $t = $this->forSlugFile($slug);
-
-        return \is_array($t) ? $t : $t->archSiteWriteFile($path, $content);
-    }
-
-    public function archSiteReadFile(string $slug, string $path): array
-    {
-        $t = $this->forSlugFile($slug);
-
-        return \is_array($t) ? $t : $t->archSiteReadFile($path);
-    }
-
-    public function archSiteListFiles(string $slug): array
-    {
-        $t = $this->forSlugFile($slug);
-
-        return \is_array($t) ? $t : $t->archSiteListFiles();
-    }
 
     // -----------------------------------------------------------------
     // Assets — Portal's project_assets table, via Portal's own
