@@ -198,6 +198,40 @@ unlink("$d/.arch-session.json");
 $r = $tools($d)->archSessionDiscard();
 check('no session: nothing to save, the underlying discard refuses as before', 0 !== $r['exit_code'] && !str_contains($r['stdout'], 'file(s)'));
 
+echo "\nfreeDiscardName(): older discarded branch of the same name\n";
+$d = $make('collide');
+git($d, 'branch discarded/mywork main');
+git($d, 'tag discard-marker/discarded/mywork/1700000000 discarded/mywork');
+file_put_contents("$d/src/a.php", "<?php\n\$a = 11;\n");
+$r = $tools($d)->archSessionDiscard();
+check('discard succeeds although discarded/mywork already existed', 0 === $r['exit_code']);
+check('reply names the kept older branch', 1 === preg_match("/kept as 'discarded\\/mywork-\\d+'/", $r['stdout']));
+check('new work is on discarded/mywork', str_contains(git($d, 'show discarded/mywork:src/a.php'), '$a = 11;'));
+$old = trim(git($d, "for-each-ref --format='%(refname:short)' 'refs/heads/discarded/mywork-*'"));
+check('older branch still exists under a unique name', 1 === preg_match('#^discarded/mywork-\d+$#', $old));
+check('older marker tag moved to the older branch, same time', '' !== trim(git($d, "tag --list 'discard-marker/$old/1700000000'")));
+check('no marker tag is left naming discarded/mywork', '' === trim(git($d, "tag --list 'discard-marker/discarded/mywork/*'")));
+
+$d = $make('collide-twice');
+git($d, 'branch discarded/mywork main');
+$stamp = (string) time();
+git($d, 'branch discarded/mywork-'.$stamp.' main');
+$r = SessionDiscard::freeDiscardName($realGit($d), $d);
+check('suffix already taken: another unique name', true === $r['ok'] && null !== $r['moved'] && 'discarded/mywork-'.$stamp !== $r['moved'] && '' !== trim(git($d, 'branch --list '.escapeshellarg($r['moved']))));
+
+$d = $make('nocollide');
+$r = SessionDiscard::freeDiscardName($realGit($d), $d);
+check('no older branch: nothing moved', true === $r['ok'] && null === $r['moved']);
+unlink("$d/.arch-session.json");
+$r = SessionDiscard::freeDiscardName($realGit($d), $d);
+check('no session file: no-op', true === $r['ok'] && null === $r['moved']);
+
+$d = $make('collide-fail');
+git($d, 'branch discarded/mywork main');
+$failRename = static fn (array $args): array => 'branch' === $args[0] && '-m' === ($args[1] ?? '') ? ['exit_code' => 1, 'stdout' => '', 'stderr' => 'nope'] : $realGit($d)($args);
+$r = SessionDiscard::freeDiscardName($failRename, $d);
+check('a failing rename is reported', false === $r['ok'] && str_contains($r['error'], 'could not be renamed'));
+
 exec('rm -rf '.escapeshellarg($base));
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail > 0 ? 1 : 0);

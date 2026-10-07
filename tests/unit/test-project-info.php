@@ -63,6 +63,15 @@ check('production git: clean, short HEAD', true === $r['production']['git']['cle
 check('no active session reports null', null === $r['staging']['session']);
 check('no server path appears anywhere in the reply', !str_contains(json_encode($r), $base));
 
+echo "\nprofile row labelling\n";
+$r = ProjectInfo::describe('demo', 'production', $profile($stg, ['profile_environment' => 'production']), $profile($stg, ['profile_environment' => 'production']));
+check('staging view that is the production row is flagged', true === ($r['staging_view_is_production'] ?? false) && isset($r['staging_note']));
+check('each view reports its row', 'production' === $r['staging']['profile_environment'] && 'production' === $r['production']['profile_environment']);
+$r = ProjectInfo::describe('demo', 'production', $profile($stg, ['profile_environment' => 'staging']), $profile($prd, ['profile_environment' => 'production']));
+check('a real staging row: no flag', !isset($r['staging_view_is_production']) && 'staging' === $r['staging']['profile_environment']);
+$r = ProjectInfo::describe('demo', 'production', $profile($stg), $profile($prd));
+check('profile without the field: null, no flag', null === $r['staging']['profile_environment'] && !isset($r['staging_view_is_production']));
+
 echo "\nsame checkout\n";
 $r = ProjectInfo::describe('demo', 'production', $profile($stg), $profile($stg));
 check('same directory: same_checkout true', true === $r['same_checkout']);
