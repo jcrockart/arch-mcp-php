@@ -897,28 +897,15 @@ final class ProjectsTools
     }
 
     // -----------------------------------------------------------------
-    // DB migrations — pending is read-only/unconditional; apply is
-    // gated inside ArchTools itself via db_apply_allowed.
-    // -----------------------------------------------------------------
-
-    public function archCoreDbPendingMigrations(string $slug): array
-    {
-        $t = $this->forSlugFile($slug);
-
-        return \is_array($t) ? $t : $t->archCoreDbPendingMigrations();
-    }
-
-    public function archCoreDbApplyMigrations(string $slug): array
-    {
-        $t = $this->forSlugFile($slug);
-
-        return \is_array($t) ? $t : $t->archCoreDbApplyMigrations();
-    }
-
-    // -----------------------------------------------------------------
     // Dependency install — gated inside ArchTools itself via
-    // dependency_manager/dependency_exclude, same as db_apply_allowed
-    // above. Added 2026-09-27 (Confluence 49840130).
+    // dependency_manager/dependency_exclude. Added 2026-09-27
+    // (Confluence 49840130).
+    //
+    // The old arch_core_db_pending_migrations and
+    // arch_core_db_apply_migrations tools were removed from this server on
+    // 2026-10-07: they resolved the staging row for any project that had
+    // one, so they reported and changed the wrong database. db_pending_* and
+    // db_migrate_* replace them.
     // -----------------------------------------------------------------
 
     public function archDependencyInstall(string $slug): array
