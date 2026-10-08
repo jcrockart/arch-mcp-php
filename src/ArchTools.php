@@ -232,6 +232,12 @@ final class ArchTools
 
         $result = $this->runArch(['session', 'commit', "--{$bump}"]);
 
+        // A passing commit prints every test line; keep only what matters
+        // (see CommitOutput). A failing commit is left exactly as printed.
+        if (0 === $result['exit_code']) {
+            $result['stdout'] = CommitOutput::compact($result['stdout']);
+        }
+
         if (0 !== $result['exit_code'] || !$this->pushAllowed) {
             return $result;
         }
