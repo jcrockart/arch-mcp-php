@@ -14,7 +14,8 @@
       {"name": "test-db-sql", "cmd": ["php", "tests/unit/test-db-sql.php"]},
       {"name": "test-db-migrations", "cmd": ["php", "tests/unit/test-db-migrations.php"]},
       {"name": "test-db-read", "cmd": ["php", "tests/unit/test-db-read.php"]},
-      {"name": "test-db-tools", "cmd": ["php", "tests/unit/test-db-tools.php"]}
+      {"name": "test-db-tools", "cmd": ["php", "tests/unit/test-db-tools.php"]},
+      {"name": "test-commit-output", "cmd": ["php", "tests/unit/test-commit-output.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }
