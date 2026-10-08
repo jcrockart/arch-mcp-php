@@ -26,10 +26,10 @@ final class BreakglassAuth
      * Deployment-time secret, outside git, outside the web root — same
      * secrets-directory convention as PortalProjectResolver::CONFIG_PATH
      * and ArchProfiles' own MAP_PATH/PROFILES_PATH. Deliberately a
-     * SEPARATE file from tokens.json/profiles.json: this isn't a profile
+     * SEPARATE file from the (now retired) tokens.json/profiles.json: this isn't a profile
      * (it grants no fixed lane set — every call names its own slug), and
-     * mixing it into the per-label token map would make it one accidental
-     * `mint-tokens.py` edit away from being rotated, relabelled, or
+     * mixing it into the per-label token map would have made it one accidental
+     * `mint-tokens.py` edit (that script is now removed) away from being rotated, relabelled, or
      * deleted by a tool that has no idea what it's touching.
      *
      * Expected content:

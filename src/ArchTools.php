@@ -874,8 +874,8 @@ final class ArchTools
      * archSiteWriteFile, just rooted at assets/ instead — see
      * resolveScopedPath. Write access is governed by the same
      * $writeExtensions allowlist every other write method here already
-     * uses — a profile provisioned read-only (write_extensions: [], via
-     * mint-tokens.py --read-only) can still call this, it is just always
+     * uses — a profile provisioned read-only (write_extensions: [] on the
+     * profile; formerly set via mint-tokens.py --read-only, now removed) can still call this, it is just always
      * refused, the same way a read-only site lane already behaves.
      *
      * @param string $path    relative path under assets/, e.g. "ARCH-CONSTITUTION.md"
@@ -1360,12 +1360,12 @@ final class ArchTools
      *
      * Deliberately narrower than every read-only tool above:
      *  - Refused outright unless this profile was provisioned with
-     *    pull_allowed=true (mint-tokens.py --allow-pull) -- opt-in per
+     *    pull_allowed=true (the pull flag on the profile in Portal) -- opt-in per
      *    profile, nothing gains this silently.
      *  - Takes NO caller-supplied arguments at all -- not the branch, not
      *    a ref, nothing. The only variable is which profile is calling,
      *    and that profile's pull_branch was fixed at provisioning time by
-     *    whoever ran mint-tokens.py, never by the live MCP request. This
+     *    whoever set up the profile in Portal, never by the live MCP request. This
      *    removes the argument-injection class of risk this file's other
      *    git methods guard against via looksLikeFlag() -- there is simply
      *    nothing here for a caller to inject into.
@@ -1443,7 +1443,7 @@ final class ArchTools
      *
      * Preconditions, all enforced before any git process spawns:
      *  - Refused outright unless this profile was provisioned with
-     *    push_allowed=true (mint-tokens.py --allow-push) -- off by
+     *    push_allowed=true (the push flag on the profile in Portal) -- off by
      *    default, opt-in per project, same as pull_allowed.
      *  - Refused if this host has no push-capable credential for this
      *    checkout's origin -- this method never supplies one itself (no

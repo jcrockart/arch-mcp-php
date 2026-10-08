@@ -481,8 +481,9 @@ if (isset($profile['lanes']['core'])) {
 
 // Added 2026-09-12, alongside item 3 ("pull to production"). Deliberately
 // a SEPARATE conditional block from the unconditional core-lane block
-// above, gated on the profile's pull_allowed flag (set only via
-// mint-tokens.py --allow-pull) — a profile without the flag doesn't even
+// above, gated on the profile's pull_allowed flag (set only on
+// the profile in Portal; the old mint-tokens.py --allow-pull is retired) —
+// a profile without the flag doesn't even
 // see this tool exists, matching the "advertised list is a filter,
 // runtime check is the real control, both required" principle already in
 // effect for every other lane above. The runtime check lives in
@@ -572,8 +573,9 @@ if (isset($profile['lanes']['code'])) {
 // these tools exist. Used two ways: the per-project profile's own
 // read/write assets lane, and every project's read-only
 // "<slug>-bootstrap" profile pointed at the shared framework root
-// (read-only enforced the normal way, via write_extensions: [] set by
-// mint-tokens.py --read-only — there is no separate mechanism here).
+// (read-only enforced the normal way, via write_extensions: [] set on
+// the profile in Portal — there is no separate mechanism here; the old
+// mint-tokens.py --read-only is retired).
 if (isset($profile['lanes']['assets'])) {
     $builder = $builder
         ->addTool([ArchTools::class, 'archAssetsWriteFile'], 'arch_assets_write_file')
@@ -591,8 +593,8 @@ if (isset($profile['lanes']['assets'])) {
 // server, validates that pair and remains the sole writer of its own
 // `projects` table. So the only thing worth gating here is "may this
 // token attempt the call at all", via a new bootstrap_fill_allowed
-// flag (set in profiles.json, off by default, provisioned via
-// mint-tokens.py --allow-bootstrap-fill). Same "advertised list is a
+// flag (a profile flag set in Portal, off by default; formerly
+// provisioned via mint-tokens.py --allow-bootstrap-fill, now retired). Same "advertised list is a
 // filter, runtime check is the real control, both required" principle
 // as every other block above — the runtime check lives in
 // ArchTools::archBootstrapFillInceptionRow() itself

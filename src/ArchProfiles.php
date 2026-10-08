@@ -343,8 +343,8 @@ final class ArchProfiles
      * (session_tools, seed, kind, write_extensions), so there is no
      * code/data lockstep left to protect. What git-tracking actually cost
      * was the thing that motivated this move: a provisioning action
-     * (today, mint-tokens.py --provision; eventually, arch-portal or
-     * other self-service tooling) could not take effect without a
+     * (at the time, mint-tokens.py --provision; that script is now removed
+     * and profiles are Portal database rows) could not take effect without a
      * human-gated commit+push+pull, which does not scale past occasional
      * manual use.
      *
@@ -496,7 +496,8 @@ final class ArchProfiles
         // write-capable git operation this server exposes -- a hardcoded,
         // zero-caller-argument `fetch` + `merge --ff-only`. Absent/false
         // by default; only a profile explicitly provisioned with
-        // --allow-pull (mint-tokens.py) carries this. See
+        // the pull flag set in Portal (formerly --allow-pull in mint-tokens.py,
+        // now removed) carries this. See
         // archCoreGitPullFastForward() in ArchTools.php.
         $pullAllowed = true === ($profile['pull_allowed'] ?? false);
 
@@ -516,7 +517,8 @@ final class ArchProfiles
         // git operation this server exposes -- a hardcoded,
         // zero-caller-argument-branch `push origin <push_branch>` (never
         // --force). Absent/false by default; only a profile explicitly
-        // provisioned with --allow-push (mint-tokens.py) carries this.
+        // given the push flag in Portal (formerly --allow-push in
+        // mint-tokens.py, now removed) carries this.
         // Setting this field alone does nothing unless a deploy key with
         // write access to that repo's GitHub origin is also configured
         // on this host -- this server never creates or holds one. See
@@ -569,9 +571,9 @@ final class ArchProfiles
         // a database for this -- Portal remains the sole writer of its
         // own `projects` table -- so there is no lane whose presence or
         // absence would make this check meaningful. Off by default; only
-        // a profile explicitly given `bootstrap_fill_allowed: true` in
-        // profiles.json carries this (mint-tokens.py --allow-bootstrap-
-        // fill). See that method's own docblock in ArchTools.php,
+        // a profile explicitly given `bootstrap_fill_allowed: true` on
+        // its profile in Portal carries this (formerly profiles.json /
+        // mint-tokens.py --allow-bootstrap-fill, now retired). See that method's own docblock in ArchTools.php,
         // public/index.php's matching (non-lane-gated) tool-registration
         // block, and claude/proposal-portal-first-project-inception.md.
         $bootstrapFillAllowed = true === ($profile['bootstrap_fill_allowed'] ?? false);
