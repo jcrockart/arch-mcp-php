@@ -4,6 +4,8 @@ namespace ArchMcp;
 
 use Psr\Log\LoggerInterface;
 
+require_once __DIR__.'/PortalCaller.php';
+
 /**
  * Calls arch-portal's public/api_assets.php on behalf of the person driving
  * an OAuth-authenticated /projects or /projects-staging session. Added
@@ -31,7 +33,7 @@ use Psr\Log\LoggerInterface;
  * live request's own Authorization header (the same header the address
  * already verified before any tool ran).
  */
-final class PortalAssetsClient
+final class PortalAssetsClient implements PortalCaller
 {
     private const TIMEOUT_SECONDS = 20;
 
@@ -42,6 +44,7 @@ final class PortalAssetsClient
         private readonly LoggerInterface $logger,
         private readonly string $environment,
         private readonly string $bearerToken,
+        private readonly string $endpoint = 'api_assets.php',
     ) {
     }
 
@@ -92,7 +95,7 @@ final class PortalAssetsClient
 
             return ['success' => false, 'code' => 'server', 'error' => 'Portal is not reachable from this server (no trusted https issuer is configured for this environment).'];
         }
-        $url = rtrim($base, '/').'/api_assets.php';
+        $url = rtrim($base, '/').'/'.$this->endpoint;
 
         $body = json_encode(
             ['action' => $action, 'slug' => $slug, 'access_token' => $this->bearerToken] + $fields,

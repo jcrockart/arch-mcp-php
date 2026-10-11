@@ -385,7 +385,7 @@ final class PortalProjectResolver
     /**
      * @param 'staging'|'production' $environment
      */
-    private static function connect(string $environment, \Psr\Log\LoggerInterface $logger): ?\PDO
+    public static function connect(string $environment, \Psr\Log\LoggerInterface $logger): ?\PDO
     {
         if (isset(self::$pdoByEnvironment[$environment])) {
             return self::$pdoByEnvironment[$environment];
