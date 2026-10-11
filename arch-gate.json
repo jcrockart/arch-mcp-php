@@ -20,7 +20,10 @@
       {"name": "test-managed-file", "cmd": ["php", "tests/unit/test-managed-file.php"]},
       {"name": "test-bootstrap-plan", "cmd": ["php", "tests/unit/test-bootstrap-plan.php"]},
       {"name": "test-binding-guard", "cmd": ["php", "tests/unit/test-binding-guard.php"]},
-      {"name": "test-binding-mode", "cmd": ["php", "tests/unit/test-binding-mode.php"]}
+      {"name": "test-binding-mode", "cmd": ["php", "tests/unit/test-binding-mode.php"]},
+      {"name": "test-bootstrap-install", "cmd": ["php", "tests/unit/test-bootstrap-install.php"]},
+      {"name": "test-binding-registry", "cmd": ["php", "tests/unit/test-binding-registry.php"]},
+      {"name": "test-binding-gate", "cmd": ["php", "tests/unit/test-binding-gate.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }

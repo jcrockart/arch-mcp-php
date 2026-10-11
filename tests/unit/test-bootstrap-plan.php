@@ -106,5 +106,21 @@ check('counts and the non-empty lists only', isset($s['counts'], $s['edited']) &
 check('no contents and no hashes in the reply', !str_contains(json_encode($s), 'MANAGED') && !str_contains(json_encode($s), ManagedFile::sha256('hacked')));
 check('empty source list: nothing to do', [] === BootstrapPlan::plan([], [], [])['writes']);
 
+echo "\ntoRecord(): what is sent to Portal after the writes\n";
+$p = BootstrapPlan::plan($src, [], []);
+$rec = BootstrapPlan::toRecord($p, [], []);
+check('first run: both installed files, with asset name and both hashes, not the unsupported one', 2 === \count($rec) && $A === $rec[0]['asset_name'] && $B === $rec[1]['asset_name'] && record('a.md', "# A\n") === array_slice($rec[0], 1, null, true));
+$existing = [$A => installedSha('a.md', "# A\n"), $B => installedSha('b.json', '{"v":2}')];
+$manifest = [$A => record('a.md', "# A\n"), $B => record('b.json', '{"v":2}')];
+check('re-run, nothing changed, records match: nothing to send', [] === BootstrapPlan::toRecord(BootstrapPlan::plan($src, $existing, $manifest), [], $manifest));
+check('identical content but no stored record: adopted', [$A] === array_column(BootstrapPlan::toRecord(BootstrapPlan::plan($src, $existing, [$B => $manifest[$B]]), [], [$B => $manifest[$B]]), 'asset_name'));
+$pu = BootstrapPlan::plan($src, [$A => installedSha('a.md', "# Old\n"), $B => $existing[$B]], [$A => record('a.md', "# Old\n"), $B => $manifest[$B]]);
+check('an updated file is sent, an unchanged one is not', [$A] === array_column(BootstrapPlan::toRecord($pu, [], [$A => record('a.md', "# Old\n"), $B => $manifest[$B]]), 'asset_name'));
+check('a file whose write failed is never sent', [] === BootstrapPlan::toRecord($pu, [$A], [$A => record('a.md', "# Old\n"), $B => $manifest[$B]]));
+$pk = BootstrapPlan::plan($src, [$A => ManagedFile::sha256('hacked'), $B => $existing[$B]], $manifest);
+check('an edited file that was kept is never sent (Portal would refuse its hash)', 'edited_kept' === action($pk, 'a.md') && [] === BootstrapPlan::toRecord($pk, [], $manifest));
+$pe = BootstrapPlan::plan($src, [$A => ManagedFile::sha256('hacked'), $B => $existing[$B]], [$A => record('a.md', "# Old\n"), $B => $manifest[$B]]);
+check('an edited file that was overwritten is sent', [$A] === array_column(BootstrapPlan::toRecord($pe, [], [$A => record('a.md', "# Old\n"), $B => $manifest[$B]]), 'asset_name'));
+
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail > 0 ? 1 : 0);

@@ -151,6 +151,39 @@ final class BootstrapPlan
     }
 
     /**
+     * The install records to send to Portal after the writes. Portal checks
+     * each record's installed hash against the file's real current hash, so
+     * only files whose content is known to be what was installed are listed:
+     * written files, and files already identical to the new content when the
+     * stored record is missing or different. Never listed: edited_kept (the
+     * file is not what was installed), unsupported, and any file whose write
+     * failed.
+     *
+     * @param array<string, mixed>                                                  $plan          the result of plan()
+     * @param list<string>                                                          $failedTargets managed names whose write failed
+     * @param array<string, array{source_sha256: string, installed_sha256: string}> $oldManifest   the records Portal held before this run
+     *
+     * @return list<array{asset_name: string, source_sha256: string, installed_sha256: string}>
+     */
+    public static function toRecord(array $plan, array $failedTargets, array $oldManifest): array
+    {
+        $out = [];
+        foreach ($plan['files'] as $f) {
+            $action = $f['action'];
+            if ('unsupported' === $action || 'edited_kept' === $action || \in_array($f['target'], $failedTargets, true)) {
+                continue;
+            }
+            $entry = ['source_sha256' => $f['source_sha256'], 'installed_sha256' => $f['installed_sha256']];
+            if ('unchanged' === $action && ($oldManifest[$f['target']] ?? null) === $entry) {
+                continue;
+            }
+            $out[] = ['asset_name' => $f['target']] + $entry;
+        }
+
+        return $out;
+    }
+
+    /**
      * The part of a plan that goes in the tool reply: counts and the lists a
      * person needs to see. No file contents and no hashes.
      *
