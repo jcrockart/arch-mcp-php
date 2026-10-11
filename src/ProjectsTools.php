@@ -19,6 +19,10 @@ require_once __DIR__.'/DbRead.php';
 require_once __DIR__.'/DbConnect.php';
 require_once __DIR__.'/DbGuard.php';
 require_once __DIR__.'/DbTools.php';
+require_once __DIR__.'/BootstrapInstall.php';
+require_once __DIR__.'/BindingMode.php';
+require_once __DIR__.'/BindingGate.php';
+require_once __DIR__.'/BindingRegistry.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -136,11 +140,14 @@ final class ProjectsTools
      *
      * @return ArchTools|array{exit_code: int, stdout: string, stderr: string}
      */
-    private function forSlugProcess(string $slug, string $kind = 'staging'): ArchTools|array
+    private function forSlugProcess(string $slug, string $kind = 'staging', ?string $claudeProjectId = null): ArchTools|array
     {
         $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
         if (null === $profile) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== $claudeProjectId && null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => $binding];
         }
 
         return new ArchTools($this->logger, $profile);
@@ -152,11 +159,14 @@ final class ProjectsTools
      *
      * @return ArchTools|array{success: false, error: string}
      */
-    private function forSlugFile(string $slug, string $kind = 'staging'): ArchTools|array
+    private function forSlugFile(string $slug, string $kind = 'staging', ?string $claudeProjectId = null): ArchTools|array
     {
         $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== $claudeProjectId && null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
         }
 
         return new ArchTools($this->logger, $profile);
@@ -193,11 +203,14 @@ final class ProjectsTools
      *
      * @return PortalAssetsClient|array{success: false, error: string}|null
      */
-    private function portalAssets(string $slug): PortalAssetsClient|array|null
+    private function portalAssets(string $slug, string $claudeProjectId = ''): PortalAssetsClient|array|null
     {
         $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
         }
         if ($this->breakglass) {
             return null;
@@ -210,13 +223,40 @@ final class ProjectsTools
         return new PortalAssetsClient($this->logger, $this->environment, $token);
     }
 
+    /**
+     * The Claude project binding check for one call (ARCH-62). Always run AFTER
+     * membership has been resolved, so a non-member learns nothing about a
+     * project's binding state. Returns the message to give the caller when the
+     * call must be refused, or null to go ahead. In log-only mode (the default
+     * until BindingMode says otherwise) it never refuses; it only logs. Portal's
+     * own service credential and the break-glass address are exempt (see
+     * BindingGuard). install_bootstrap and arch_bootstrap_fill_inception_row do
+     * not call this.
+     */
+    private function bindingError(string $slug, string $claudeProjectId): ?string
+    {
+        $caller = $this->portalService
+            ? BindingGuard::CALLER_PORTAL_SERVICE
+            : ($this->breakglass ? BindingGuard::CALLER_BREAKGLASS : BindingGuard::CALLER_USER);
+
+        return BindingGate::check(
+            $this->logger,
+            BindingMode::load(),
+            $caller,
+            $this->portalUserId,
+            $slug,
+            $claudeProjectId,
+            fn (string $s): ?array => BindingRegistry::fetch($s, $this->environment, $this->logger),
+        );
+    }
+
     // -----------------------------------------------------------------
     // Session / codegen — gated by session_tools, checked explicitly.
     // -----------------------------------------------------------------
 
-    public function archSessionStart(string $slug, string $name = '', string $lane = 'metadata'): array
+    public function archSessionStart(string $slug, string $name = '', string $lane = 'metadata', string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -227,9 +267,9 @@ final class ProjectsTools
         return $t->archSessionStart($name, $lane);
     }
 
-    public function archCodegenPreview(string $slug): array
+    public function archCodegenPreview(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -240,9 +280,9 @@ final class ProjectsTools
         return $t->archCodegenPreview();
     }
 
-    public function archSessionCommit(string $slug, string $bump = 'patch'): array
+    public function archSessionCommit(string $slug, string $bump = 'patch', string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -253,9 +293,9 @@ final class ProjectsTools
         return $t->archSessionCommit($bump);
     }
 
-    public function archSessionDiscard(string $slug): array
+    public function archSessionDiscard(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -266,9 +306,9 @@ final class ProjectsTools
         return $t->archSessionDiscard();
     }
 
-    public function archSessionStatus(string $slug): array
+    public function archSessionStatus(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -279,9 +319,9 @@ final class ProjectsTools
         return $t->archSessionStatus();
     }
 
-    public function archSessionWriteFile(string $slug, string $path, string $content): array
+    public function archSessionWriteFile(string $slug, string $path, string $content, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -292,9 +332,9 @@ final class ProjectsTools
         return $t->archSessionWriteFile($path, $content);
     }
 
-    public function archSessionReadFile(string $slug, string $path): array
+    public function archSessionReadFile(string $slug, string $path, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -305,9 +345,9 @@ final class ProjectsTools
         return $t->archSessionReadFile($path);
     }
 
-    public function archSessionListFiles(string $slug): array
+    public function archSessionListFiles(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -325,9 +365,9 @@ final class ProjectsTools
     // gate needed here beyond profile resolution.
     // -----------------------------------------------------------------
 
-    public function archCodeWriteFile(string $slug, string $path, string $content): array
+    public function archCodeWriteFile(string $slug, string $path, string $content, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCodeWriteFile($path, $content);
     }
@@ -347,9 +387,9 @@ final class ProjectsTools
      * @param int    $start optional: first line to read (1-based); 0 or omitted with no end = whole file
      * @param int    $end   optional: last line to read (inclusive); 0 = 200 lines from start
      */
-    public function archCodeReadFile(string $slug, string $path, int $start = 0, int $end = 0): array
+    public function archCodeReadFile(string $slug, string $path, int $start = 0, int $end = 0, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
             return $t;
         }
@@ -360,9 +400,9 @@ final class ProjectsTools
         return $t->archCodeReadFile($path);
     }
 
-    public function archCodeListFiles(string $slug): array
+    public function archCodeListFiles(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCodeListFiles();
     }
@@ -383,9 +423,9 @@ final class ProjectsTools
      * @param string $old  the exact text to replace; must occur exactly once
      * @param string $new  the replacement text (may be empty to delete)
      */
-    public function archCodeEditFile(string $slug, string $path, string $old, string $new): array
+    public function archCodeEditFile(string $slug, string $path, string $old, string $new, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : CodeEdit::run($t, $path, $old, $new);
     }
@@ -409,9 +449,9 @@ final class ProjectsTools
      * @param string $slug      project slug
      * @param string $editsJson JSON list of {"path": ..., "old": ..., "new": ...}
      */
-    public function archCodeEditMany(string $slug, string $editsJson): array
+    public function archCodeEditMany(string $slug, string $editsJson, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : CodeEditMany::runJson($t, $editsJson);
     }
@@ -436,9 +476,9 @@ final class ProjectsTools
      * @param bool   $ignoreCase match upper and lower case alike (default false)
      * @param int    $maxResults most matches to return (default 50, max 200)
      */
-    public function archCodeSearch(string $slug, string $text, string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = 50): array
+    public function archCodeSearch(string $slug, string $text, string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = 50, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : CodeRead::search($t, $text, $pathPrefix, $ignoreCase, $maxResults);
     }
@@ -458,11 +498,14 @@ final class ProjectsTools
      *
      * @param string $slug project slug
      */
-    public function archProjectInfo(string $slug): array
+    public function archProjectInfo(string $slug, string $claudeProjectId = ''): array
     {
         $staging = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'staging');
         if (null === $staging) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
         }
         $production = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
 
@@ -486,7 +529,7 @@ final class ProjectsTools
      *
      * @return array{profile: array<string, mixed>}|array{success: false, error: string}
      */
-    private function dbProfile(string $slug, string $kind): array
+    private function dbProfile(string $slug, string $kind, string $claudeProjectId = ''): array
     {
         if ('production' === $kind && 'production' !== $this->environment) {
             return ['success' => false, 'error' => 'the production database tools are only on the production connector'];
@@ -494,6 +537,9 @@ final class ProjectsTools
         $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, $kind);
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
         }
         if ($kind !== ($profile['profile_environment'] ?? null)) {
             return ['success' => false, 'error' => "this project has no {$kind} profile here, so the {$kind} database tools are not available for it"];
@@ -521,9 +567,9 @@ final class ProjectsTools
      * @param string $sql     one SELECT, SHOW, DESCRIBE or EXPLAIN statement
      * @param int    $maxRows most rows to return (default 50, max 200)
      */
-    public function archDbReadStaging(string $slug, string $sql, int $maxRows = 50): array
+    public function archDbReadStaging(string $slug, string $sql, int $maxRows = 50, string $claudeProjectId = ''): array
     {
-        $p = $this->dbProfile($slug, 'staging');
+        $p = $this->dbProfile($slug, 'staging', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
@@ -545,9 +591,9 @@ final class ProjectsTools
      * @param string $sql     one SELECT, SHOW, DESCRIBE or EXPLAIN statement
      * @param int    $maxRows most rows to return (default 50, max 200)
      */
-    public function archDbReadProd(string $slug, string $sql, int $maxRows = 50): array
+    public function archDbReadProd(string $slug, string $sql, int $maxRows = 50, string $claudeProjectId = ''): array
     {
-        $p = $this->dbProfile($slug, 'production');
+        $p = $this->dbProfile($slug, 'production', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
@@ -565,9 +611,9 @@ final class ProjectsTools
      *
      * @param string $slug project slug
      */
-    public function archDbPendingStaging(string $slug): array
+    public function archDbPendingStaging(string $slug, string $claudeProjectId = ''): array
     {
-        $p = $this->dbProfile($slug, 'staging');
+        $p = $this->dbProfile($slug, 'staging', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
@@ -583,9 +629,9 @@ final class ProjectsTools
      *
      * @param string $slug project slug
      */
-    public function archDbPendingProd(string $slug): array
+    public function archDbPendingProd(string $slug, string $claudeProjectId = ''): array
     {
-        $p = $this->dbProfile($slug, 'production');
+        $p = $this->dbProfile($slug, 'production', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
@@ -611,9 +657,9 @@ final class ProjectsTools
      * @param string $upTo               optional: apply only up to and including this migration id
      * @param string $confirmDestructive optional: comma-separated ids of destructive migrations to allow
      */
-    public function archDbMigrateStaging(string $slug, string $upTo = '', string $confirmDestructive = ''): array
+    public function archDbMigrateStaging(string $slug, string $upTo = '', string $confirmDestructive = '', string $claudeProjectId = ''): array
     {
-        $p = $this->dbProfile($slug, 'staging');
+        $p = $this->dbProfile($slug, 'staging', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
@@ -635,9 +681,9 @@ final class ProjectsTools
      * @param string $upTo               optional: apply only up to and including this migration id
      * @param string $confirmDestructive only honoured when Portal itself is the caller
      */
-    public function archDbMigrateProd(string $slug, string $upTo = '', string $confirmDestructive = ''): array
+    public function archDbMigrateProd(string $slug, string $upTo = '', string $confirmDestructive = '', string $claudeProjectId = ''): array
     {
-        $p = $this->dbProfile($slug, 'production');
+        $p = $this->dbProfile($slug, 'production', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
@@ -690,9 +736,9 @@ final class ProjectsTools
      * @param string $notes          optional note stored with the asset (max 500 characters)
      * @param string $publish        optional: 'none', 'root' or 'public' (see above); omit to inherit
      */
-    public function archAssetsWriteFile(string $slug, string $path, string $content, string $onConflict = 'fail', string $expectedSha256 = '', string $notes = '', string $publish = ''): array
+    public function archAssetsWriteFile(string $slug, string $path, string $content, string $onConflict = 'fail', string $expectedSha256 = '', string $notes = '', string $publish = '', string $claudeProjectId = ''): array
     {
-        $client = $this->portalAssets($slug);
+        $client = $this->portalAssets($slug, $claudeProjectId);
         if (\is_array($client)) {
             return $client;
         }
@@ -724,9 +770,9 @@ final class ProjectsTools
      * @param string $path    file name, as shown by arch_assets_list_files
      * @param string $publish 'none', 'root' or 'public'
      */
-    public function archAssetsSetPublish(string $slug, string $path, string $publish): array
+    public function archAssetsSetPublish(string $slug, string $path, string $publish, string $claudeProjectId = ''): array
     {
-        $client = $this->portalAssets($slug);
+        $client = $this->portalAssets($slug, $claudeProjectId);
         if (\is_array($client)) {
             return $client;
         }
@@ -750,9 +796,9 @@ final class ProjectsTools
      * @param string $slug project slug
      * @param string $path file name, as shown by arch_assets_list_files
      */
-    public function archAssetsReadFile(string $slug, string $path): array
+    public function archAssetsReadFile(string $slug, string $path, string $claudeProjectId = ''): array
     {
-        $client = $this->portalAssets($slug);
+        $client = $this->portalAssets($slug, $claudeProjectId);
         if (\is_array($client)) {
             return $client;
         }
@@ -773,9 +819,9 @@ final class ProjectsTools
      *
      * @param string $slug project slug
      */
-    public function archAssetsListFiles(string $slug): array
+    public function archAssetsListFiles(string $slug, string $claudeProjectId = ''): array
     {
-        $client = $this->portalAssets($slug);
+        $client = $this->portalAssets($slug, $claudeProjectId);
         if (\is_array($client)) {
             return $client;
         }
@@ -795,51 +841,51 @@ final class ProjectsTools
     // — no extra check needed here.
     // -----------------------------------------------------------------
 
-    public function archCoreGitStatus(string $slug): array
+    public function archCoreGitStatus(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitStatus();
     }
 
-    public function archCoreGitDiff(string $slug, string $ref = 'HEAD', string $path = ''): array
+    public function archCoreGitDiff(string $slug, string $ref = 'HEAD', string $path = '', string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitDiff($ref, $path);
     }
 
-    public function archCoreGitLog(string $slug, int $count = 10, string $path = ''): array
+    public function archCoreGitLog(string $slug, int $count = 10, string $path = '', string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitLog($count, $path);
     }
 
-    public function archCoreGitShow(string $slug, string $ref, string $path): array
+    public function archCoreGitShow(string $slug, string $ref, string $path, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitShow($ref, $path);
     }
 
-    public function archCoreGitFetch(string $slug): array
+    public function archCoreGitFetch(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitFetch();
     }
 
-    public function archCoreGitPullFastForward(string $slug): array
+    public function archCoreGitPullFastForward(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug, 'production');
+        $t = $this->forSlugProcess($slug, 'production', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitPullFastForward();
     }
 
-    public function archCoreGitPushOrigin(string $slug, string $expectedHead): array
+    public function archCoreGitPushOrigin(string $slug, string $expectedHead, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugProcess($slug);
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archCoreGitPushOrigin($expectedHead);
     }
@@ -864,11 +910,14 @@ final class ProjectsTools
      * @param string $slug        project slug
      * @param bool   $includeDiff also return the incoming diff (default false)
      */
-    public function archProdState(string $slug, bool $includeDiff = false): array
+    public function archProdState(string $slug, bool $includeDiff = false, string $claudeProjectId = ''): array
     {
         $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
         if (null === $profile) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
         }
         if (!isset($profile['lanes']['core'])) {
             return ['success' => false, 'error' => "this project's production profile has no core lane"];
@@ -891,9 +940,9 @@ final class ProjectsTools
     // db_migrate_* replace them.
     // -----------------------------------------------------------------
 
-    public function archDependencyInstall(string $slug): array
+    public function archDependencyInstall(string $slug, string $claudeProjectId = ''): array
     {
-        $t = $this->forSlugFile($slug);
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
 
         return \is_array($t) ? $t : $t->archDependencyInstall();
     }
@@ -925,5 +974,57 @@ final class ProjectsTools
         $t = $this->forSlugFile($slug, 'production');
 
         return \is_array($t) ? $t : $t->archBootstrapFillInceptionRow($targetSlug, $token, $configJson, $gitRemote);
+    }
+
+    // -----------------------------------------------------------------
+    // install_bootstrap (ARCH-63): copies the arch-bootstrap framework files
+    // into the project's assets and registers this Claude project for it. The
+    // work is BootstrapInstall's; Portal checks who is calling (owner or
+    // contributor, provisioned project) on every step, with the caller's own
+    // token. Exempt from the binding check, because it is what creates the
+    // binding. Needs an OAuth session: the break-glass address and Portal's own
+    // service credential have no person for Portal to check, so they are refused.
+    // -----------------------------------------------------------------
+
+    /**
+     * Install the arch-bootstrap framework files (constitution, schemas) into
+     * this project's assets as managed files (names start with
+     * "arch-bootstrap--"; do not edit them) and register this Claude project
+     * for the project. Run it once when a project is set up, and again to pick
+     * up updated framework files: a re-run writes only files whose source
+     * changed and names any file that was edited locally. Owners and
+     * contributors only. After it succeeds, pass the same claudeProjectId on
+     * every other arch-projects tool call for this project.
+     *
+     * @param string $slug              project slug
+     * @param string $claudeProjectId   the GUID in this Claude project's URL (https://claude.ai/project/<guid>), or the URL itself
+     * @param string $claudeProjectName optional label for people reading Portal and logs; never matched
+     */
+    public function installBootstrap(string $slug, string $claudeProjectId, string $claudeProjectName = ''): array
+    {
+        if ($this->breakglass || $this->portalService) {
+            return ['success' => false, 'error' => 'install_bootstrap can only run from an OAuth-authenticated /projects session, because Portal must know who you are. The break-glass address and Portal\'s own service credential cannot install.'];
+        }
+        $token = PortalAssetsClient::bearerFromServer($_SERVER);
+        if (null === $token) {
+            return ['success' => false, 'error' => 'install_bootstrap needs an OAuth-authenticated /projects session; this request carries no access token.'];
+        }
+
+        $result = BootstrapInstall::run(
+            new PortalAssetsClient($this->logger, $this->environment, $token),
+            new PortalAssetsClient($this->logger, $this->environment, $token, 'api_bootstrap.php'),
+            $slug,
+            $claudeProjectId,
+            $claudeProjectName,
+        );
+        $this->logger->warning('install_bootstrap', [
+            'slug' => $slug,
+            'portal_user_id' => $this->portalUserId,
+            'success' => $result['success'] ?? false,
+            'written' => $result['written'] ?? 0,
+            'code' => $result['code'] ?? null,
+        ]);
+
+        return $result;
     }
 }
