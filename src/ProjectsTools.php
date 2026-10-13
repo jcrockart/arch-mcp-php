@@ -500,6 +500,9 @@ final class ProjectsTools
      * staging and production site addresses, worked out from the project's
      * metadata/project.config.json (null with a note when they cannot be). A
      * `site` lane, where listed, is a legacy leftover that no tool here uses.
+     * Each environment view has a `database` entry: the engine and, for SQLite,
+     * the database file's path inside the project folder and whether it exists
+     * (the connection settings themselves are never shown).
      * `environment_notes` is the text Portal holds about this project's stack
      * and limits (hosting, runtime, what is not available), or null when none
      * is set; `environment_notes_truncated` or `environment_notes_unavailable`
@@ -619,6 +622,8 @@ final class ProjectsTools
      * but not yet applied to its STAGING database. Read-only. Each entry has
      * id, type, data_class, description and whether applying it would count
      * as destructive (with the reason). To apply them use db_migrate_staging.
+     * A .sql file in db/migrations without a valid `-- id:` and `-- type:`
+     * header at its top is ignored; any such file is listed under `skipped`.
      *
      * @param string $slug project slug
      */
@@ -636,7 +641,8 @@ final class ProjectsTools
      * List the migrations that are declared in the project's db/migrations
      * but not yet applied to its PRODUCTION database. For the project's
      * Owner. Read-only, and always about production, whatever the staging
-     * database looks like. To apply them use db_migrate_prod.
+     * database looks like. To apply them use db_migrate_prod. Files ignored for
+     * lacking the `-- id:` and `-- type:` header are listed under `skipped`.
      *
      * @param string $slug project slug
      */
@@ -662,7 +668,8 @@ final class ProjectsTools
      * and the reply lists them with their SQL; pass their ids in
      * `confirmDestructive` to run them. The reply's `safe_up_to` is the last
      * migration before the first destructive one. To see what is pending
-     * without applying, use db_pending_staging.
+     * without applying, use db_pending_staging. Files ignored for lacking the
+     * `-- id:` and `-- type:` header are listed under `skipped`.
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id

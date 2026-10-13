@@ -44,7 +44,7 @@ $r = ProjectUrls::fromConfig($cfg);
 check('staging URL is the domain plus the project folder', 'https://arch-staging.crockart.com.au/test-bootstrap-0925/' === $r['staging']);
 check('production URL likewise', 'https://arch.crockart.com.au/test-bootstrap-0925/' === $r['production']);
 check('no note when both are known', !isset($r['note']) && 'metadata/project.config.json' === $r['source']);
-check('no server path anywhere in the result', !str_contains(json_encode($r), '/home/'));
+check('no server path anywhere in the result', !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), '/home/') && !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), 'public_html'));
 
 echo "\nurlFor(): shapes\n";
 check('document root that is the domain web root: the bare domain', 'https://d.example.com/' === ProjectUrls::urlFor('d.example.com', '/home/u/public_html/d.example.com'));
@@ -91,7 +91,7 @@ $r = ProjectUrls::forCheckout("$base/ok");
 check('reads metadata/project.config.json in the checkout', 'https://arch-staging.crockart.com.au/test-bootstrap-0925/' === $r['staging']);
 mkdir("$base/none", 0775, true);
 $r = ProjectUrls::forCheckout("$base/none");
-check('no config file: nulls and a note, no path in it', null === $r['staging'] && null === $r['production'] && str_contains($r['note'], 'no project.config.json') && !str_contains(json_encode($r), $base));
+check('no config file: nulls and a note, no path in it', null === $r['staging'] && null === $r['production'] && str_contains($r['note'], 'no project.config.json') && !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), $base));
 mkdir("$base/bad/metadata", 0775, true);
 file_put_contents("$base/bad/metadata/project.config.json", '{oops');
 check('invalid JSON: nulls and a note', str_contains(ProjectUrls::forCheckout("$base/bad")['note'], 'not valid JSON'));
@@ -109,7 +109,7 @@ check('the site lane is still listed, but explained', \in_array('site', $r['stag
 check('only the site lane gets a note', ['site'] === array_keys($r['staging']['lane_notes']));
 $r = ProjectInfo::describe('demo', 'production', $p("$base/ok", ['code' => '', 'core' => '']), null);
 check('no site lane: no lane_notes key at all', !isset($r['staging']['lane_notes']));
-check('no server path anywhere in the whole reply', !str_contains(json_encode($r), $base) && !str_contains(json_encode($r), '/home/crockart'));
+check('no server path anywhere in the whole reply', !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), $base) && !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), '/home/crockart') && !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), 'public_html'));
 
 exec('rm -rf '.escapeshellarg($base));
 printf("\n%d passed, %d failed\n", $pass, $fail);

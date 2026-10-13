@@ -3,6 +3,7 @@
 namespace ArchMcp;
 
 require_once __DIR__.'/ProjectUrls.php';
+require_once __DIR__.'/ProjectDatabase.php';
 
 /**
  * One-call project summary, added 2026-10-06 (arch_project_info): what a
@@ -83,6 +84,7 @@ final class ProjectInfo
             $view['lane_notes'] = ['site' => "legacy lane left over from the retired site tools; no tool on this connector reads or writes it, so ignore it (the edit tools use the 'code' lane)"];
         }
         $view['code_stage_paths'] = self::stagePaths((string) ($p['root'] ?? ''));
+        $view['database'] = ProjectDatabase::forCheckout($dir);
         $view['git'] = self::gitState($dir);
         $view['session'] = self::session((string) ($p['root'] ?? ''));
 

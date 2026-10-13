@@ -117,6 +117,74 @@ final class DbMigrations
     }
 
     /**
+     * Files in $dir that look like migrations but are ignored, with the reason, so a
+     * migration written without its header, or with the wrong extension, is reported
+     * instead of silently doing nothing. Files that are not .sql at all are not listed.
+     *
+     * @return list<array{file: string, problem: string}>
+     */
+    public static function listSkipped(string $dir): array
+    {
+        if (!is_dir($dir)) {
+            return [];
+        }
+        $names = scandir($dir) ?: [];
+        sort($names);
+
+        $skipped = [];
+        foreach ($names as $name) {
+            $path = $dir.'/'.$name;
+            if (!is_file($path) || 'sql' !== strtolower(pathinfo($name, \PATHINFO_EXTENSION))) {
+                continue;
+            }
+            if (!str_ends_with($name, '.sql')) {
+                $skipped[] = ['file' => $name, 'problem' => "the extension must be lower case '.sql', so this file is ignored"];
+                continue;
+            }
+            $content = file_get_contents($path);
+            if (false === $content) {
+                $skipped[] = ['file' => $name, 'problem' => 'the file could not be read, so it is ignored'];
+                continue;
+            }
+            if (null === self::parse($content)) {
+                $skipped[] = ['file' => $name, 'problem' => self::headerProblem($content)];
+            }
+        }
+
+        return $skipped;
+    }
+
+    /** Which of the two required header lines (id, type) a file lacks, as a sentence. */
+    private static function headerProblem(string $content): string
+    {
+        $hasId = false;
+        $hasType = false;
+        foreach (explode("\n", $content) as $line) {
+            if (1 === preg_match('/^--\s*id:\s*(.+)$/', $line)) {
+                $hasId = true;
+                continue;
+            }
+            if (1 === preg_match('/^--\s*type:\s*(.+)$/', $line)) {
+                $hasType = true;
+                continue;
+            }
+            if ('' === trim($line) || 1 === preg_match('/^--/', $line)) {
+                continue;
+            }
+            break;
+        }
+        $missing = [];
+        if (!$hasId) {
+            $missing[] = '-- id:';
+        }
+        if (!$hasType) {
+            $missing[] = '-- type:';
+        }
+
+        return 'missing '.implode(' and ', $missing).' in the header at the top of the file, so it is ignored';
+    }
+
+    /**
      * Ids already recorded in schema_migrations; empty when the table does not exist.
      *
      * @return list<string>
