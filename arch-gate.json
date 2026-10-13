@@ -27,7 +27,9 @@
       {"name": "test-bootstrap-register", "cmd": ["php", "tests/unit/test-bootstrap-register.php"]},
       {"name": "test-bootstrap-read", "cmd": ["php", "tests/unit/test-bootstrap-read.php"]},
       {"name": "test-project-urls", "cmd": ["php", "tests/unit/test-project-urls.php"]},
-      {"name": "test-project-notes", "cmd": ["php", "tests/unit/test-project-notes.php"]}
+      {"name": "test-project-notes", "cmd": ["php", "tests/unit/test-project-notes.php"]},
+      {"name": "test-project-database", "cmd": ["php", "tests/unit/test-project-database.php"]},
+      {"name": "test-db-skipped", "cmd": ["php", "tests/unit/test-db-skipped.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }

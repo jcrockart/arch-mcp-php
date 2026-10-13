@@ -79,6 +79,9 @@ final class DbTools
             return ['success' => false, 'error' => $e->getMessage()];
         }
 
+        $skipped = DbMigrations::listSkipped($root.'/db/migrations');
+        $withSkipped = static fn (array $r): array => [] === $skipped ? $r : $r + ['skipped' => $skipped];
+
         $confirmed = $mayConfirm
             ? array_values(array_filter(array_map('trim', explode(',', $confirmDestructive)), static fn (string $s): bool => '' !== $s))
             : [];
@@ -101,11 +104,11 @@ final class DbTools
                 $out['hint'] = "upTo='{$plan['safe_up_to']}' applies everything before the first destructive one";
             }
 
-            return $out;
+            return $withSkipped($out);
         }
 
         if ([] === $plan['selected']) {
-            return ['success' => true, 'environment' => $kind, 'applied' => [], 'pending_after' => 0, 'note' => 'nothing pending'];
+            return $withSkipped(['success' => true, 'environment' => $kind, 'applied' => [], 'pending_after' => 0, 'note' => [] === $skipped ? 'nothing pending' : 'nothing pending, but '.\count($skipped).' file(s) in db/migrations were ignored: see skipped']);
         }
 
         $result = DbMigrations::apply($pdo, $plan['selected'], 'staging' === $kind ? 'agent:db_migrate_staging' : 'agent:db_migrate_prod');
@@ -114,7 +117,7 @@ final class DbTools
             $result['pending_after'] = \count($pending) - \count($plan['selected']);
         }
 
-        return $result;
+        return $withSkipped($result);
     }
 
     /**
@@ -169,8 +172,12 @@ final class DbTools
             'pending_count' => \count($list),
             'pending' => $list,
         ];
+        $skipped = DbMigrations::listSkipped($root.'/db/migrations');
+        if ([] !== $skipped) {
+            $out['skipped'] = $skipped;
+        }
         if ([] === $list) {
-            $out['note'] = 'nothing pending';
+            $out['note'] = [] === $skipped ? 'nothing pending' : 'nothing pending, but '.\count($skipped).' file(s) in db/migrations were ignored: see skipped';
         }
 
         return $out;
