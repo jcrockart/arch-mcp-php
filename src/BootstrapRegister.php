@@ -9,8 +9,8 @@ require_once __DIR__.'/ClaudeProjectId.php';
  * The install_bootstrap run (ARCH-62 / ARCH-63, direction settled 2026-10-13):
  * register the caller's Claude project for a project, and say what to do next.
  *
- * It writes nothing into the project. The framework files (constitution,
- * BOOTSTRAP.md, schemas) are not copied anywhere; the Claude project chat pulls
+ * It writes nothing into the project. The framework files (whatever arch-bootstrap
+ * holds: the constitution and any others) are not copied anywhere; the Claude project chat pulls
  * them with arch_bootstrap_read (BootstrapRead) and saves them into its own
  * project knowledge. Registering the (slug, Claude project ID) pair is what
  * "bootstrapped" means, and it is what the binding check later compares against.
@@ -26,9 +26,9 @@ require_once __DIR__.'/ClaudeProjectId.php';
 final class BootstrapRegister
 {
     private const NEXT = 'Next: call arch_bootstrap_read with this slug and no path to list the framework files. '
-        .'Read ARCH-CONSTITUTION.md and, if it is listed, BOOTSTRAP.md, and save each into this Claude project\'s '
-        .'knowledge exactly as returned; then read the saved copy back and check its sha256 against the one the tool '
-        .'returned. From now on pass claudeProjectId (the ID registered here) on every arch-projects tool call for this project.';
+        .'Then read each listed file and save it into this Claude project\'s knowledge exactly as returned; '
+        .'read each saved copy back and check its sha256 against the one the tool returned. '
+        .'From now on pass claudeProjectId (the ID registered here) on every arch-projects tool call for this project.';
 
     /**
      * @return array<string, mixed>
