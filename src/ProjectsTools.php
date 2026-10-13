@@ -1020,8 +1020,8 @@ final class ProjectsTools
     }
 
     /**
-     * Read the arch-bootstrap framework files (the ARCH constitution,
-     * BOOTSTRAP.md, schemas) so they can be saved into this Claude project's
+     * Read the arch-bootstrap framework files (the ARCH constitution
+     * and any other files arch-bootstrap holds) so they can be saved into this Claude project's
      * knowledge. With no path it lists the files with their size and sha256;
      * with a path it returns that file's text with its size and sha256, so a
      * saved copy can be read back and compared. Read-only. Owners and
