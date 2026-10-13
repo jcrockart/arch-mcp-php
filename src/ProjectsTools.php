@@ -21,6 +21,7 @@ require_once __DIR__.'/DbGuard.php';
 require_once __DIR__.'/DbTools.php';
 require_once __DIR__.'/BootstrapRegister.php';
 require_once __DIR__.'/BootstrapRead.php';
+require_once __DIR__.'/ProjectNotes.php';
 require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
 require_once __DIR__.'/BindingRegistry.php';
@@ -499,6 +500,10 @@ final class ProjectsTools
      * staging and production site addresses, worked out from the project's
      * metadata/project.config.json (null with a note when they cannot be). A
      * `site` lane, where listed, is a legacy leftover that no tool here uses.
+     * `environment_notes` is the text Portal holds about this project's stack
+     * and limits (hosting, runtime, what is not available), or null when none
+     * is set; `environment_notes_truncated` or `environment_notes_unavailable`
+     * appear only when they apply.
      *
      * @param string $slug project slug
      */
@@ -513,7 +518,9 @@ final class ProjectsTools
         }
         $production = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
 
-        return ProjectInfo::describe($slug, $this->environment, $staging, $production);
+        $notes = ProjectNotes::fetch($slug, $this->environment, $this->logger);
+
+        return ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes);
     }
 
     // -----------------------------------------------------------------
