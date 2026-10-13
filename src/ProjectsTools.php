@@ -495,7 +495,10 @@ final class ProjectsTools
      * branch, start time). `same_checkout` is true when staging and
      * production are the same directory (a project with no separate staging
      * row). Read-only, no fetch: for how far production is behind origin use
-     * arch_prod_state. Server paths are never shown.
+     * arch_prod_state. Server paths are never shown. Also returns `urls`: the
+     * staging and production site addresses, worked out from the project's
+     * metadata/project.config.json (null with a note when they cannot be). A
+     * `site` lane, where listed, is a legacy leftover that no tool here uses.
      *
      * @param string $slug project slug
      */

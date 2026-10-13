@@ -2,6 +2,8 @@
 
 namespace ArchMcp;
 
+require_once __DIR__.'/ProjectUrls.php';
+
 /**
  * One-call project summary, added 2026-10-06 (arch_project_info): what a
  * chat needs to know before it starts work, without piecing it together
@@ -33,6 +35,7 @@ final class ProjectInfo
             'portal_environment' => $portalEnvironment,
             'staging' => self::view($staging),
             'production' => null === $production ? null : self::view($production),
+            'urls' => ProjectUrls::forCheckout(self::checkoutDir($staging)),
         ];
         $out['same_checkout'] = null !== $production && self::checkoutDir($staging) === self::checkoutDir($production);
         if ('production' === ($staging['profile_environment'] ?? null)) {
@@ -66,6 +69,11 @@ final class ProjectInfo
             'db_apply_allowed' => (bool) ($p['db_apply_allowed'] ?? false),
             'dependency_manager' => $p['dependency_manager'] ?? 'none',
         ];
+        if (\array_key_exists('site', (array) ($p['lanes'] ?? []))) {
+            // Every provisioned project still gets a 'site' lane. Nothing on this
+            // connector reads or writes it, so say so rather than leave a chat guessing.
+            $view['lane_notes'] = ['site' => "legacy lane left over from the retired site tools; no tool on this connector reads or writes it, so ignore it (the edit tools use the 'code' lane)"];
+        }
         $view['code_stage_paths'] = self::stagePaths((string) ($p['root'] ?? ''));
         $view['git'] = self::gitState($dir);
         $view['session'] = self::session((string) ($p['root'] ?? ''));

@@ -25,7 +25,8 @@
       {"name": "test-binding-registry", "cmd": ["php", "tests/unit/test-binding-registry.php"]},
       {"name": "test-binding-gate", "cmd": ["php", "tests/unit/test-binding-gate.php"]},
       {"name": "test-bootstrap-register", "cmd": ["php", "tests/unit/test-bootstrap-register.php"]},
-      {"name": "test-bootstrap-read", "cmd": ["php", "tests/unit/test-bootstrap-read.php"]}
+      {"name": "test-bootstrap-read", "cmd": ["php", "tests/unit/test-bootstrap-read.php"]},
+      {"name": "test-project-urls", "cmd": ["php", "tests/unit/test-project-urls.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }
