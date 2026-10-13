@@ -669,7 +669,9 @@ final class ProjectsTools
      * `confirmDestructive` to run them. The reply's `safe_up_to` is the last
      * migration before the first destructive one. To see what is pending
      * without applying, use db_pending_staging. Files ignored for lacking the
-     * `-- id:` and `-- type:` header are listed under `skipped`.
+     * `-- id:` and `-- type:` header are listed under `skipped`. The
+     * schema_migrations table is created automatically if the database has none,
+     * so a migration must not create it (or must use CREATE TABLE IF NOT EXISTS).
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id
@@ -693,7 +695,9 @@ final class ProjectsTools
      * destructive migration can NOT be confirmed from a chat: if one is in the
      * selection nothing is applied and the reply says it must be confirmed in
      * Portal. `upTo` lets you apply everything before it. To see what is
-     * pending first, use db_pending_prod.
+     * pending first, use db_pending_prod. The schema_migrations table is created
+     * automatically if the database has none; a migration must not create it
+     * (or must use CREATE TABLE IF NOT EXISTS).
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id
