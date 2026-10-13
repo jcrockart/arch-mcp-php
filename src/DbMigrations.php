@@ -283,6 +283,50 @@ final class DbMigrations
     }
 
     /**
+     * Makes sure the schema_migrations ledger exists before anything is applied, so a
+     * brand-new project's empty database does not make its first migration fail with
+     * "no such table". Only the apply step calls this: listing what is pending stays
+     * read-only and creates nothing. An existing ledger is never touched, whatever
+     * its columns, and the create statement is not even tried when it can be read.
+     * Only SQLite and MySQL are known; for any other driver nothing is created.
+     *
+     * @return string|null an error message, or null when the ledger exists or was created
+     */
+    public static function ensureLedger(\PDO $pdo): ?string
+    {
+        try {
+            $probe = $pdo->query('SELECT 1 FROM schema_migrations LIMIT 1');
+            if (false !== $probe) {
+                $probe->closeCursor();
+            }
+
+            return null;
+        } catch (\PDOException $e) {
+            // Not readable: most likely missing. Create it below.
+        }
+
+        $ddl = match ($pdo->getAttribute(\PDO::ATTR_DRIVER_NAME)) {
+            'sqlite' => 'CREATE TABLE IF NOT EXISTS schema_migrations ('
+                .'id TEXT PRIMARY KEY, type TEXT NOT NULL, data_class TEXT, description TEXT, '
+                .'applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, applied_by TEXT)',
+            'mysql' => 'CREATE TABLE IF NOT EXISTS schema_migrations ('
+                .'id VARCHAR(191) NOT NULL PRIMARY KEY, type VARCHAR(64) NOT NULL, data_class VARCHAR(64) NULL, description TEXT NULL, '
+                .'applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, applied_by VARCHAR(128) NULL) DEFAULT CHARSET=utf8mb4',
+            default => null,
+        };
+        if (null === $ddl) {
+            return null;
+        }
+        try {
+            $pdo->exec($ddl);
+        } catch (\PDOException $e) {
+            return 'could not create the schema_migrations table: '.$e->getMessage();
+        }
+
+        return null;
+    }
+
+    /**
      * Run $selected in order, each in its own transaction, recording each in
      * schema_migrations unless the migration already recorded itself.
      *
@@ -292,6 +336,10 @@ final class DbMigrations
      */
     public static function apply(\PDO $pdo, array $selected, string $appliedBy): array
     {
+        $ledgerError = self::ensureLedger($pdo);
+        if (null !== $ledgerError) {
+            return ['success' => false, 'error' => $ledgerError, 'applied_before_failure' => []];
+        }
         $applied = [];
         foreach ($selected as $m) {
             try {
