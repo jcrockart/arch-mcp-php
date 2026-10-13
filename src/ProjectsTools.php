@@ -19,7 +19,8 @@ require_once __DIR__.'/DbRead.php';
 require_once __DIR__.'/DbConnect.php';
 require_once __DIR__.'/DbGuard.php';
 require_once __DIR__.'/DbTools.php';
-require_once __DIR__.'/BootstrapInstall.php';
+require_once __DIR__.'/BootstrapRegister.php';
+require_once __DIR__.'/BootstrapRead.php';
 require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
 require_once __DIR__.'/BindingRegistry.php';
@@ -977,24 +978,24 @@ final class ProjectsTools
     }
 
     // -----------------------------------------------------------------
-    // install_bootstrap (ARCH-63): copies the arch-bootstrap framework files
-    // into the project's assets and registers this Claude project for it. The
-    // work is BootstrapInstall's; Portal checks who is calling (owner or
-    // contributor, provisioned project) on every step, with the caller's own
-    // token. Exempt from the binding check, because it is what creates the
-    // binding. Needs an OAuth session: the break-glass address and Portal's own
-    // service credential have no person for Portal to check, so they are refused.
+    // install_bootstrap (ARCH-62 / ARCH-63): registers this Claude project for
+    // the project (BootstrapRegister) and writes nothing into the project; the
+    // framework files are pulled by the chat with arch_bootstrap_read
+    // (BootstrapRead) and saved into its own project knowledge. Portal checks who
+    // is calling (owner or contributor, provisioned project), with the caller's
+    // own token. Both tools need an OAuth session: the break-glass address and
+    // Portal's own service credential have no person for Portal to check, so they
+    // are refused. install_bootstrap is exempt from the binding check, because it
+    // is what creates the binding; arch_bootstrap_read is subject to it.
     // -----------------------------------------------------------------
 
     /**
-     * Install the arch-bootstrap framework files (constitution, schemas) into
-     * this project's assets as managed files (names start with
-     * "arch-bootstrap--"; do not edit them) and register this Claude project
-     * for the project. Run it once when a project is set up, and again to pick
-     * up updated framework files: a re-run writes only files whose source
-     * changed and names any file that was edited locally. Owners and
-     * contributors only. After it succeeds, pass the same claudeProjectId on
-     * every other arch-projects tool call for this project.
+     * Register this Claude project for the project. Run it once when a project
+     * is set up. Nothing is written into the project: the reply says what to do
+     * next, which is to pull the framework files with arch_bootstrap_read and
+     * save them into this Claude project's knowledge. Owners and contributors
+     * only. After it succeeds, pass the same claudeProjectId on every other
+     * arch-projects tool call for this project.
      *
      * @param string $slug              project slug
      * @param string $claudeProjectId   the GUID in this Claude project's URL (https://claude.ai/project/<guid>), or the URL itself
@@ -1002,29 +1003,68 @@ final class ProjectsTools
      */
     public function installBootstrap(string $slug, string $claudeProjectId, string $claudeProjectName = ''): array
     {
-        if ($this->breakglass || $this->portalService) {
-            return ['success' => false, 'error' => 'install_bootstrap can only run from an OAuth-authenticated /projects session, because Portal must know who you are. The break-glass address and Portal\'s own service credential cannot install.'];
-        }
-        $token = PortalAssetsClient::bearerFromServer($_SERVER);
-        if (null === $token) {
-            return ['success' => false, 'error' => 'install_bootstrap needs an OAuth-authenticated /projects session; this request carries no access token.'];
+        $client = $this->bootstrapClient('install_bootstrap');
+        if (\is_array($client)) {
+            return $client;
         }
 
-        $result = BootstrapInstall::run(
-            new PortalAssetsClient($this->logger, $this->environment, $token),
-            new PortalAssetsClient($this->logger, $this->environment, $token, 'api_bootstrap.php'),
-            $slug,
-            $claudeProjectId,
-            $claudeProjectName,
-        );
+        $result = BootstrapRegister::run($client, $slug, $claudeProjectId, $claudeProjectName);
         $this->logger->warning('install_bootstrap', [
             'slug' => $slug,
             'portal_user_id' => $this->portalUserId,
             'success' => $result['success'] ?? false,
-            'written' => $result['written'] ?? 0,
             'code' => $result['code'] ?? null,
         ]);
 
         return $result;
+    }
+
+    /**
+     * Read the arch-bootstrap framework files (the ARCH constitution,
+     * BOOTSTRAP.md, schemas) so they can be saved into this Claude project's
+     * knowledge. With no path it lists the files with their size and sha256;
+     * with a path it returns that file's text with its size and sha256, so a
+     * saved copy can be read back and compared. Read-only. Owners and
+     * contributors of the project only.
+     *
+     * @param string $slug            project slug
+     * @param string $path            a file name exactly as listed; empty to list the files
+     * @param string $claudeProjectId this Claude project's ID, once registered with install_bootstrap
+     */
+    public function archBootstrapRead(string $slug, string $path = '', string $claudeProjectId = ''): array
+    {
+        $client = $this->bootstrapClient('arch_bootstrap_read');
+        if (\is_array($client)) {
+            return $client;
+        }
+        // Membership first, so a non-member learns nothing about the binding state.
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
+        if (null === $profile) {
+            return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
+        }
+
+        return BootstrapRead::run($client, $slug, $path);
+    }
+
+    /**
+     * The Portal bootstrap endpoint client for the caller's own token, or the
+     * refusal to return when this request has no person for Portal to check.
+     *
+     * @return PortalAssetsClient|array<string, mixed>
+     */
+    private function bootstrapClient(string $tool): PortalAssetsClient|array
+    {
+        if ($this->breakglass || $this->portalService) {
+            return ['success' => false, 'error' => $tool.' can only run from an OAuth-authenticated /projects session, because Portal must know who you are. The break-glass address and Portal\'s own service credential cannot use it.'];
+        }
+        $token = PortalAssetsClient::bearerFromServer($_SERVER);
+        if (null === $token) {
+            return ['success' => false, 'error' => $tool.' needs an OAuth-authenticated /projects session; this request carries no access token.'];
+        }
+
+        return new PortalAssetsClient($this->logger, $this->environment, $token, 'api_bootstrap.php');
     }
 }
