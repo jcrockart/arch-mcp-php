@@ -49,6 +49,9 @@ check('unrecognised text is unchanged', "hello\n" === CommitOutput::compact("hel
 check('empty string is unchanged', '' === CommitOutput::compact(''));
 $mixed = "1 passed, 0 failed\n  [FAIL] hidden\nValidating session 'x' (lane: code) before commit...\n\n-- gate: lint\n\nCOMMITTED. done\n";
 check('a [FAIL] line before COMMITTED keeps the full text', $mixed === CommitOutput::compact($mixed));
+$labelled = "1 passed, 0 failed\n  [PASS] a [FAIL] line before COMMITTED keeps the full text\nValidating session 'x' (lane: code) before commit...\n\n-- gate: lint\n\nCOMMITTED. done\n";
+$o3 = CommitOutput::compact($labelled);
+check('a passing check whose label mentions [FAIL] is still shortened', $labelled !== $o3 && str_contains($o3, 'Checks: 1 passed, 0 failed.') && false === strpos($o3, '[PASS]'));
 $noCounts = "Validating session 'x' (lane: code) before commit...\n\n-- gate: lint\n\nCOMMITTED. done\n";
 $o2 = CommitOutput::compact($noCounts);
 check('no test counts: no Checks line, still compact', false === strpos($o2, 'Checks:') && str_contains($o2, 'Gates passed (1): lint'));
