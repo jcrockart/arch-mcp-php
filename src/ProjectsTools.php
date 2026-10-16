@@ -256,7 +256,10 @@ final class ProjectsTools
     // Session / codegen — gated by session_tools, checked explicitly.
     // -----------------------------------------------------------------
 
-    public function archSessionStart(string $slug, string $name = '', string $lane = 'metadata', string $claudeProjectId = ''): array
+    /**
+     * @param string $lane leave empty to follow the project: 'code' when its code lane also stages metadata/ (one-lane projects), otherwise 'metadata'. Pass 'code' or 'metadata' to choose.
+     */
+    public function archSessionStart(string $slug, string $name = '', string $lane = '', string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {

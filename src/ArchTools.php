@@ -53,6 +53,7 @@ use Psr\Log\LoggerInterface;
 // Required explicitly, like the other classes added after vendor/ was built.
 require_once __DIR__.'/SessionDiscard.php';
 require_once __DIR__.'/SessionLaneGuard.php';
+require_once __DIR__.'/SessionVersion.php';
 
 final class ArchTools
 {
@@ -154,14 +155,19 @@ final class ArchTools
      * editing any metadata.
      *
      * @param string $name optional session name; auto-generated (timestamp-based) if omitted
-     * @param string $lane optional lane name (default 'metadata'); must be one
-     * the caller's profile grants in arch-mcp-secrets/profiles.json, or the
-     * session refuses to start
+     * @param string $lane optional lane name; must be one the caller's profile
+     * grants in arch-mcp-secrets/profiles.json, or the session refuses to
+     * start. Left empty it follows the project: 'code' when the project's
+     * arch-gate.json code lane stages metadata/ (one-lane projects),
+     * otherwise 'metadata' (see SessionVersion)
      *
      * @return array<string, mixed> exit_code, stdout, stderr from arch.py
      */
-    public function archSessionStart(string $name = '', string $lane = 'metadata'): array
+    public function archSessionStart(string $name = '', string $lane = ''): array
     {
+        if ('' === $lane) {
+            $lane = SessionVersion::defaultLane($this->repoPath, $this->lanes);
+        }
         if (!isset($this->lanes[$lane])) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this token has no '{$lane}' lane"];
         }
@@ -221,6 +227,12 @@ final class ArchTools
      * with push_allowed = false (the default) gets no 'push' key at all
      * — behaviour is identical to before this change.
      *
+     * A commit that carries metadata/ gets a version whichever lane it ran in:
+     * the metadata lane (arch.py bumps, writes VERSION.json, tags), and a code
+     * lane whose stage paths include metadata/ (this server does the same
+     * right after the merge, see SessionVersion). A code lane without
+     * metadata/ in its stage paths is never versioned.
+     *
      * @param string $bump one of "major", "minor", "patch" (default "patch"), per 22.5 Semantic Versioning Policy
      *
      * @return array<string, mixed> exit_code, stdout, stderr from arch.py, plus an optional 'push' key (see above)
@@ -231,12 +243,27 @@ final class ArchTools
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "invalid bump '{$bump}'"];
         }
 
+        $lane = SessionLaneGuard::sessionLane($this->repoPath) ?? '';
+
         $result = $this->runArch(['session', 'commit', "--{$bump}"]);
+        $versionedByArch = str_contains($result['stdout'], 'COMMITTED as v');
 
         // A passing commit prints every test line; keep only what matters
         // (see CommitOutput). A failing commit is left exactly as printed.
         if (0 === $result['exit_code']) {
             $result['stdout'] = CommitOutput::compact($result['stdout']);
+        }
+
+        // A commit that carries metadata/ is versioned whichever lane it ran
+        // in (see SessionVersion). arch.py versions the metadata lane itself.
+        // Like the push below, a failure here never turns the durable commit
+        // into a failed one: it is reported in 'version' and in stdout.
+        if (0 === $result['exit_code'] && !$versionedByArch && SessionVersion::needsBump($this->repoPath, $lane)) {
+            $version = SessionVersion::apply(fn (array $args): array => $this->execGit($args, $this->repoPath), $this->repoPath, $bump);
+            $result['version'] = $version;
+            $result['stdout'] = rtrim($result['stdout'])."\n".($version['ok']
+                ? "Versioned as {$version['tag']}: this commit carries metadata/.\n"
+                : "WARNING: the session was merged, but the version bump failed ({$version['error']}); main has no new version.\n");
         }
 
         if (0 !== $result['exit_code'] || !$this->pushAllowed) {
