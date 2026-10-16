@@ -321,6 +321,18 @@ final class ProjectsTools
         return $t->archSessionStatus();
     }
 
+    /**
+     * Write a file in a METADATA-lane session. `path` is relative to the
+     * project's metadata/ folder, for example "entities/note.json". In any
+     * other session (for example a code-lane session, which also stages
+     * metadata/) this refuses: use arch_code_write_file or arch_code_edit_file
+     * with a repo-root path such as "metadata/entities/note.json". Needs an
+     * active session.
+     *
+     * @param string $slug    project slug
+     * @param string $path    path inside metadata/, e.g. "entities/note.json"
+     * @param string $content full file content
+     */
     public function archSessionWriteFile(string $slug, string $path, string $content, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
@@ -334,6 +346,16 @@ final class ProjectsTools
         return $t->archSessionWriteFile($path, $content);
     }
 
+    /**
+     * Read a file under the project's metadata/ folder; `path` is relative to
+     * it, for example "entities/note.json". Works with or without a session.
+     * In a session on a lane that also stages metadata/ (the one-lane code
+     * lane) this refuses: use arch_code_read_file with a repo-root path such
+     * as "metadata/entities/note.json", which also reaches arch-gate.json.
+     *
+     * @param string $slug project slug
+     * @param string $path path inside metadata/, e.g. "entities/note.json"
+     */
     public function archSessionReadFile(string $slug, string $path, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
@@ -347,6 +369,14 @@ final class ProjectsTools
         return $t->archSessionReadFile($path);
     }
 
+    /**
+     * List the files under the project's metadata/ folder, paths relative to
+     * it. Works with or without a session. In a session on a lane that also
+     * stages metadata/ (the one-lane code lane) this refuses: use
+     * arch_code_list_files, which lists every staged file with repo-root paths.
+     *
+     * @param string $slug project slug
+     */
     public function archSessionListFiles(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
