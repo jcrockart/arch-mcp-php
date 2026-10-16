@@ -52,6 +52,7 @@ use Psr\Log\LoggerInterface;
 
 // Required explicitly, like the other classes added after vendor/ was built.
 require_once __DIR__.'/SessionDiscard.php';
+require_once __DIR__.'/SessionLaneGuard.php';
 
 final class ArchTools
 {
@@ -377,6 +378,10 @@ final class ArchTools
             return ['success' => false, 'error' => 'no active session — call arch_session_start first'];
         }
 
+        if (null !== ($why = SessionLaneGuard::refusal($this->repoPath, SessionLaneGuard::WRITE))) {
+            return ['success' => false, 'error' => $why];
+        }
+
         if (!$this->extensionAllowed($path)) {
             return ['success' => false, 'error' => "file type not permitted for this token: '{$path}'"];
         }
@@ -411,6 +416,10 @@ final class ArchTools
      */
     public function archSessionReadFile(string $path): array
     {
+        if (null !== ($why = SessionLaneGuard::refusal($this->repoPath, SessionLaneGuard::READ))) {
+            return ['success' => false, 'error' => $why];
+        }
+
         $resolved = $this->resolveMetadataPath($path);
         if (null === $resolved) {
             return ['success' => false, 'error' => "invalid path '{$path}' — must stay inside metadata/"];
@@ -437,6 +446,10 @@ final class ArchTools
      */
     public function archSessionListFiles(): array
     {
+        if (null !== ($why = SessionLaneGuard::refusal($this->repoPath, SessionLaneGuard::LIST))) {
+            return ['success' => false, 'error' => $why];
+        }
+
         // Was: $this->repoPath.'/metadata' — a hardcoded subdirectory that
         // ignored the token's lane map completely. Two bugs in one: a
         // profile whose 'metadata' lane is the root itself listed a
