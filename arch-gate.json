@@ -32,7 +32,8 @@
       {"name": "test-db-skipped", "cmd": ["php", "tests/unit/test-db-skipped.php"]},
       {"name": "test-db-ledger", "cmd": ["php", "tests/unit/test-db-ledger.php"]},
       {"name": "test-one-lane", "cmd": ["php", "tests/unit/test-one-lane.php"]},
-      {"name": "test-session-lane-guard", "cmd": ["php", "tests/unit/test-session-lane-guard.php"]}
+      {"name": "test-session-lane-guard", "cmd": ["php", "tests/unit/test-session-lane-guard.php"]},
+      {"name": "test-session-version", "cmd": ["php", "tests/unit/test-session-version.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }
