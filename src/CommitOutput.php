@@ -39,7 +39,10 @@ final class CommitOutput
             }
         }
         // A failure line anywhere means this is not a clean pass: show it all.
-        if ($failed > 0 || false !== strpos($before, '[FAIL]')) {
+        // Only a result line that STARTS with [FAIL] counts: a passing check
+        // whose label mentions "[FAIL]" (test-commit-output has one) must not
+        // stop every real commit from being shortened.
+        if ($failed > 0 || 1 === preg_match('/^\s*\[FAIL\]/m', $before)) {
             return $stdout;
         }
 
