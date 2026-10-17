@@ -15,6 +15,7 @@
       {"name": "test-db-migrations", "cmd": ["php", "tests/unit/test-db-migrations.php"]},
       {"name": "test-db-read", "cmd": ["php", "tests/unit/test-db-read.php"]},
       {"name": "test-db-tools", "cmd": ["php", "tests/unit/test-db-tools.php"]},
+      {"name": "test-db-fresh", "cmd": ["php", "tests/unit/test-db-fresh.php"]},
       {"name": "test-commit-output", "cmd": ["php", "tests/unit/test-commit-output.php"]},
       {"name": "test-claude-project-id", "cmd": ["php", "tests/unit/test-claude-project-id.php"]},
       {"name": "test-managed-file", "cmd": ["php", "tests/unit/test-managed-file.php"]},

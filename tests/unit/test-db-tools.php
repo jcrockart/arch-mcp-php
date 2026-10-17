@@ -11,7 +11,7 @@ if (!is_file($ROOT."/src/DbSql.php")) {
     fwrite(STDERR, "Cannot locate app root from ".__DIR__."\n");
     exit(2);
 }
-foreach (["DbSql", "DbMigrations", "DbRead", "DbConnect", "DbGuard", "DbTools", "OAuthBearer"] as $c) {
+foreach (["DbSql", "DbMigrations", "DbRead", "DbConnect", "DbFreshCheck", "DbGuard", "DbTools", "OAuthBearer"] as $c) {
     require_once $ROOT."/src/".$c.".php";
 }
 $pass = 0; $fail = 0;
@@ -51,6 +51,9 @@ file_put_contents($d.'/db/migrations/0002_b.sql', mig('b', 'schema-additive', 'C
 file_put_contents($d.'/db/migrations/0003_c.sql', mig('c', 'schema-destructive', 'DROP TABLE a;'));
 $boot = new PDO('sqlite:'.$d.'/app.sqlite');
 $boot->exec('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, type TEXT, data_class TEXT, description TEXT, applied_at TEXT, applied_by TEXT)');
+// An existing table makes this a NOT-fresh database, so the destructive rules below are exercised
+// (a fresh, empty production database waives them: see tests/unit/test-db-fresh.php).
+$boot->exec('CREATE TABLE keep (id INTEGER)');
 $boot = null;
 $profile = ['root' => $d, 'lanes' => ['core' => '']];
 function tables(string $d): array {

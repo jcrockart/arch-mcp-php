@@ -85,6 +85,12 @@ final class DbTools
         $confirmed = $mayConfirm
             ? array_values(array_filter(array_map('trim', explode(',', $confirmDestructive)), static fn (string $s): bool => '' !== $s))
             : [];
+        // A brand-new production database has nothing to lose: the destructive check is waived
+        // for it. Judged once, before anything is applied (see DbFreshCheck).
+        $fresh = 'production' === $kind && DbFreshCheck::isFresh($pdo);
+        if ($fresh) {
+            $confirmed = array_map(static fn (array $m): string => (string) $m['id'], $pending);
+        }
         $plan = DbMigrations::plan($pending, trim($upTo), $confirmed);
         if (isset($plan['error'])) {
             return ['success' => false, 'error' => $plan['error']];
@@ -113,6 +119,9 @@ final class DbTools
 
         $result = DbMigrations::apply($pdo, $plan['selected'], 'staging' === $kind ? 'agent:db_migrate_staging' : 'agent:db_migrate_prod');
         $result['environment'] = $kind;
+        if ($fresh) {
+            $result['fresh_database'] = true;
+        }
         if ($result['success']) {
             $result['pending_after'] = \count($pending) - \count($plan['selected']);
         }
