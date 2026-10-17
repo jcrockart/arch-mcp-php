@@ -14,7 +14,7 @@ if (!is_file($ROOT.'/src/DbSql.php')) {
     fwrite(STDERR, "Cannot locate app root from ".__DIR__."\n");
     exit(2);
 }
-foreach (['DbSql', 'DbMigrations', 'DbRead', 'DbConnect', 'DbGuard', 'DbTools'] as $c) {
+foreach (['DbSql', 'DbMigrations', 'DbRead', 'DbConnect', 'DbFreshCheck', 'DbGuard', 'DbTools'] as $c) {
     require_once $ROOT.'/src/'.$c.'.php';
 }
 
