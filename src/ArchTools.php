@@ -53,6 +53,7 @@ use Psr\Log\LoggerInterface;
 // Required explicitly, like the other classes added after vendor/ was built.
 require_once __DIR__.'/SessionDiscard.php';
 require_once __DIR__.'/SessionLaneGuard.php';
+require_once __DIR__.'/SessionList.php';
 require_once __DIR__.'/SessionVersion.php';
 
 final class ArchTools
@@ -468,11 +469,20 @@ final class ArchTools
      * List every file currently in the metadata tree (all 5 categories:
      * project.config.json, entities/, domain/, workflows/, integrations/),
      * so an agent can see current state without guessing paths.
+     * In a one-lane code session (the code lane also stages metadata/) it
+     * returns the code lane's listing with repo-root paths instead; see
+     * SessionList.
      *
      * @return array<string, mixed>
      */
     public function archSessionListFiles(): array
     {
+        // One-lane code session: answer with the code lane's listing
+        // instead of refusing and pointing there.
+        if (null !== ($via = SessionList::viaCodeLane($this, $this->repoPath))) {
+            return $via;
+        }
+
         if (null !== ($why = SessionLaneGuard::refusal($this->repoPath, SessionLaneGuard::LIST))) {
             return ['success' => false, 'error' => $why];
         }

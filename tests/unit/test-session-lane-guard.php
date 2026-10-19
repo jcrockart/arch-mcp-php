@@ -81,7 +81,7 @@ check('...and nothing landed in the wrong place', [] === strays($one) && !is_fil
 $r = $t->archSessionReadFile('entities/note.json');
 check('read refused, pointing to arch_code_read_file', false === $r['success'] && str_contains($r['error'], 'arch_code_read_file'));
 $r = $t->archSessionListFiles();
-check('list refused, pointing to arch_code_list_files', false === $r['success'] && str_contains($r['error'], 'arch_code_list_files'));
+check('list answered with the code lane listing (repo-root paths), not refused', true === $r['success'] && in_array('metadata/entities/note.json', $r['files'], true) && 'repo-root' === $r['paths'] && str_contains($r['lane_note'], 'arch_code_list_files'));
 check('the code tools still do the job', true === $t->archCodeWriteFile('metadata/entities/new.json', '{}')['success'] && true === $t->archCodeReadFile('arch-gate.json')['success']);
 
 // --- two lanes: the code lane does not stage metadata ------------------
