@@ -20,7 +20,10 @@ namespace ArchMcp;
  *  - a READ or LIST is refused only when the session's lane stages
  *    metadata/, because only there is "use the arch_code_* tools" the right
  *    answer. In a code session that does not stage metadata/, arch_code_read_file
- *    cannot reach it, so reading through the session tool stays allowed;
+ *    cannot reach it, so reading through the session tool stays allowed.
+ *    Since 2026-10-19 a one-lane code session's LIST no longer reaches the
+ *    refusal: ArchTools answers it with the code lane's listing first (see
+ *    SessionList), and refusal() stays as the backstop for any other lane;
  *  - no active session: nothing is refused here (reads work on main as they
  *    always did; a write already fails for want of a session).
  *

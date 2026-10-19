@@ -375,8 +375,11 @@ final class ProjectsTools
     /**
      * List the files under the project's metadata/ folder, paths relative to
      * it. Works with or without a session. In a session on a lane that also
-     * stages metadata/ (the one-lane code lane) this refuses: use
-     * arch_code_list_files, which lists every staged file with repo-root paths.
+     * stages metadata/ (the one-lane code lane) it returns the code lane's
+     * listing instead, the same as arch_code_list_files: every staged file
+     * with repo-root paths such as "metadata/entities/note.json" (the reply
+     * says so in `paths` and `lane_note`). In every other case the paths are
+     * relative to metadata/.
      *
      * @param string $slug project slug
      */
@@ -494,9 +497,10 @@ final class ProjectsTools
     // arch_code_read_range was folded into arch_code_read_file (start/end).
 
     /**
-     * Find where some text appears across the code lane's files. A plain
-     * literal substring match (no regular expressions, so characters like
-     * ( . * mean themselves), case-sensitive unless ignoreCase is true.
+     * Find where some text appears across the code lane's files. The
+     * argument is `text` (there is no `pattern` argument): a plain literal
+     * substring match, not a regular expression, so characters like
+     * ( . * mean themselves. Case-sensitive unless ignoreCase is true.
      * Returns matches as {path, line, text} (text is the matching line,
      * cut at 300 characters), at most maxResults of them (default 50, up to
      * 200); `truncated` says if more existed. Pass `pathPrefix` (e.g. "src/")
@@ -506,7 +510,7 @@ final class ProjectsTools
      * arch_code_read_file with start/end to see the surrounding lines.
      *
      * @param string $slug       project slug
-     * @param string $text       the exact text to look for (not a pattern)
+     * @param string $text       the exact text to look for: a literal substring, not a regex
      * @param string $pathPrefix optional: only search paths starting with this
      * @param bool   $ignoreCase match upper and lower case alike (default false)
      * @param int    $maxResults most matches to return (default 50, max 200)
