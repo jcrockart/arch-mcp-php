@@ -66,6 +66,33 @@ check('a domain that is not a host name', null === ProjectUrls::urlFor('not a do
 check('a domain with a scheme or path in it', null === ProjectUrls::urlFor('https://d.example.com/x', '/home/u/public_html/d.example.com'));
 check('empty document root', null === ProjectUrls::urlFor('d.example.com', ''));
 
+echo "\nown subdomain: first label is the project slug\n";
+$own = ['project' => ['slug' => 'the-office'], 'environments' => [
+    'staging' => $env('arch-staging.crockart.com.au', '/home/crockart/public_html/arch-staging.crockart.com.au/the-office'),
+    'production' => $env('the-office.crockart.com.au', '/home/crockart/public_html/arch-projects/the-office/public'),
+]];
+$r = ProjectUrls::fromConfig($own);
+check('production on its own subdomain: the bare domain', 'https://the-office.crockart.com.au/' === $r['production']);
+check('staging next to it stays path style', 'https://arch-staging.crockart.com.au/the-office/' === $r['staging']);
+check('no note when both are known', !isset($r['note']));
+check('no server path in the result', !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), '/home/') && !str_contains(json_encode($r, JSON_UNESCAPED_SLASHES), 'public_html'));
+check('urlFor with the slug: bare domain', 'https://app.example.com/' === ProjectUrls::urlFor('app.example.com', '/home/u/public_html/x/app/public', 'app'));
+check('slug case and domain case do not matter', 'https://app.example.com/' === ProjectUrls::urlFor('APP.Example.com', '/home/u/public_html/x/app/public', 'App'));
+check('the existing shape still wins when it matches', 'https://app.example.com/' === ProjectUrls::urlFor('app.example.com', '/home/u/public_html/app.example.com', 'app'));
+
+echo "\nown subdomain: refused, never guessed\n";
+check('no slug given: still refused', null === ProjectUrls::urlFor('app.example.com', '/home/u/public_html/x/app/public'));
+check('slug does not match the first label', null === ProjectUrls::urlFor('other.example.com', '/home/u/public_html/x/app/public', 'app'));
+check('slug is only a prefix of the first label', null === ProjectUrls::urlFor('app-two.example.com', '/home/u/public_html/x/app/public', 'app'));
+check('slug appears later in the domain, not first', null === ProjectUrls::urlFor('www.app.example.com', '/home/u/public_html/x/app/public', 'app'));
+check('document root not under public_html', null === ProjectUrls::urlFor('app.example.com', '/var/www/app/public', 'app'));
+check('traversal in the document root', null === ProjectUrls::urlFor('app.example.com', '/home/u/public_html/x/../app', 'app'));
+check('a space in a folder name', null === ProjectUrls::urlFor('app.example.com', '/home/u/public_html/my app/public', 'app'));
+check('a folder starting with a dot', null === ProjectUrls::urlFor('app.example.com', '/home/u/public_html/.git/public', 'app'));
+check('document root is public_html itself', null === ProjectUrls::urlFor('app.example.com', '/home/u/public_html', 'app'));
+check('slug of the wrong type in the config is ignored', null === ProjectUrls::fromConfig(['project' => ['slug' => 5], 'environments' => ['production' => $env('app.example.com', '/home/u/public_html/x/app/public')]])['production']);
+check('project block of the wrong type is ignored', null === ProjectUrls::fromConfig(['project' => 'app', 'environments' => ['production' => $env('app.example.com', '/home/u/public_html/x/app/public')]])['production']);
+
 echo "\nfromConfig(): partial and legacy configs\n";
 $only = ['environments' => ['production' => $cfg['environments']['production']]];
 $r = ProjectUrls::fromConfig($only);
