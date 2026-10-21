@@ -17,7 +17,21 @@ namespace ArchMcp;
  *   -> https://<domain>/<slug>/
  *
  * and a document root that IS the domain's web root gives https://<domain>/.
- * Only that shape is recognised. Anything else (another layout, a bad domain,
+ *
+ * A project on its own subdomain (added 2026-10-21) is served from the root
+ * of that domain, and its document root can be anywhere under public_html
+ * (usually a symlink to the project's public/ folder):
+ *
+ *   slug the-office, domain the-office.crockart.com.au,
+ *   document_root /home/<account>/public_html/arch-projects/the-office/public
+ *   -> https://the-office.crockart.com.au/
+ *
+ * It is recognised only when the domain's first label is exactly the
+ * project's slug (project.slug in the same config) and the document root is a
+ * plain path under public_html. The slug is the only signal, so a path-style
+ * project is never mistaken for one.
+ *
+ * Only those shapes are recognised. Anything else (another layout, a bad domain,
  * odd path segments) gives null for that environment plus a note, never a
  * guess. The scheme is always https.
  *
@@ -66,6 +80,7 @@ final class ProjectUrls
         }
 
         $out = ['staging' => null, 'production' => null, 'source' => self::FILE];
+        $slug = \is_array($cfg['project'] ?? null) && \is_string($cfg['project']['slug'] ?? null) ? $cfg['project']['slug'] : '';
         $notes = [];
         foreach (['staging', 'production'] as $name) {
             $env = $envs[$name];
@@ -73,7 +88,7 @@ final class ProjectUrls
                 $notes[] = "no {$name} hosting is declared";
                 continue;
             }
-            $url = self::urlFor((string) ($env['domain'] ?? ''), (string) ($env['document_root'] ?? ''));
+            $url = self::urlFor((string) ($env['domain'] ?? ''), (string) ($env['document_root'] ?? ''), $slug);
             if (null === $url) {
                 $notes[] = "the {$name} URL could not be worked out from its domain and document root";
                 continue;
@@ -88,7 +103,7 @@ final class ProjectUrls
     }
 
     /** The URL for one environment, or null if its domain and document root are not in the recognised shape. */
-    public static function urlFor(string $domain, string $documentRoot): ?string
+    public static function urlFor(string $domain, string $documentRoot, string $slug = ''): ?string
     {
         $domain = strtolower(trim($domain));
         if (1 !== preg_match(self::HOST, $domain)) {
@@ -96,7 +111,7 @@ final class ProjectUrls
         }
         $root = rtrim(trim($documentRoot), '/');
         if (1 !== preg_match('~^/home/[^/]+/public_html/'.preg_quote($domain, '~').'(/.*)?$~i', $root, $m)) {
-            return null;
+            return self::ownSubdomainUrl($domain, $root, $slug);
         }
         $rest = trim($m[1] ?? '', '/');
         if ('' === $rest) {
@@ -110,5 +125,28 @@ final class ProjectUrls
         }
 
         return 'https://'.$domain.'/'.implode('/', $segments).'/';
+    }
+
+    /**
+     * A project on its own subdomain: the domain's first label is exactly the
+     * project's slug and the document root is a plain path under public_html.
+     * Gives the bare domain, or null if either condition fails.
+     */
+    private static function ownSubdomainUrl(string $domain, string $root, string $slug): ?string
+    {
+        $slug = strtolower(trim($slug));
+        if ('' === $slug || explode('.', $domain, 2)[0] !== $slug) {
+            return null;
+        }
+        if (1 !== preg_match('~^/home/[^/]+/public_html/(.+)$~', $root, $m)) {
+            return null;
+        }
+        foreach (explode('/', $m[1]) as $segment) {
+            if (1 !== preg_match(self::SEGMENT, $segment)) {
+                return null;
+            }
+        }
+
+        return 'https://'.$domain.'/';
     }
 }
