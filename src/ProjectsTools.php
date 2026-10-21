@@ -24,6 +24,7 @@ require_once __DIR__.'/BootstrapRead.php';
 require_once __DIR__.'/ProjectNotes.php';
 require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
+require_once __DIR__.'/ProjectBindings.php';
 require_once __DIR__.'/BindingRegistry.php';
 
 /**
@@ -232,14 +233,12 @@ final class ProjectsTools
      * call must be refused, or null to go ahead. In log-only mode (the default
      * until BindingMode says otherwise) it never refuses; it only logs. Portal's
      * own service credential and the break-glass address are exempt (see
-     * BindingGuard). install_bootstrap and arch_bootstrap_fill_inception_row do
-     * not call this.
+     * BindingGuard). install_bootstrap, arch_bootstrap_fill_inception_row and
+     * arch_project_info do not call this.
      */
     private function bindingError(string $slug, string $claudeProjectId): ?string
     {
-        $caller = $this->portalService
-            ? BindingGuard::CALLER_PORTAL_SERVICE
-            : ($this->breakglass ? BindingGuard::CALLER_BREAKGLASS : BindingGuard::CALLER_USER);
+        $caller = $this->bindingCaller();
 
         return BindingGate::check(
             $this->logger,
@@ -250,6 +249,14 @@ final class ProjectsTools
             $claudeProjectId,
             fn (string $s): ?array => BindingRegistry::fetch($s, $this->environment, $this->logger),
         );
+    }
+
+    /** Which kind of caller this request is, for the binding check and for arch_project_info's binding section. */
+    private function bindingCaller(): string
+    {
+        return $this->portalService
+            ? BindingGuard::CALLER_PORTAL_SERVICE
+            : ($this->breakglass ? BindingGuard::CALLER_BREAKGLASS : BindingGuard::CALLER_USER);
     }
 
     // -----------------------------------------------------------------
@@ -523,6 +530,12 @@ final class ProjectsTools
     }
 
     /**
+     * EXEMPT from the Claude project ID check: call this first in every
+     * session to get the project's claudeProjectId (the `binding` section
+     * below), then pass it as claudeProjectId on every other arch-projects tool
+     * call for this project. Never ask the user for the ID. Project membership
+     * and role are still checked.
+     *
      * Everything a chat needs to know about a project before starting work,
      * in one call: for the staging profile (what the editing tools use) and
      * the production profile (what pull and assets use), the lanes it has,
@@ -544,8 +557,14 @@ final class ProjectsTools
      * and limits (hosting, runtime, what is not available), or null when none
      * is set; `environment_notes_truncated` or `environment_notes_unavailable`
      * appear only when they apply.
+     * `binding` says how the Claude project ID check is set (`mode`: log or
+     * enforce), a `state` (registered, registered_by_others, grandfathered,
+     * not_bootstrapped, unavailable or not_applicable), the
+     * `claude_project_ids` that YOU registered for this project (other
+     * people's are never listed) and a `note` saying what to do next.
      *
-     * @param string $slug project slug
+     * @param string $slug            project slug
+     * @param string $claudeProjectId not needed: this tool is exempt from the ID check, and it is where the ID comes from
      */
     public function archProjectInfo(string $slug, string $claudeProjectId = ''): array
     {
@@ -553,14 +572,18 @@ final class ProjectsTools
         if (null === $staging) {
             return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
         }
-        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
-            return ['success' => false, 'error' => $binding];
-        }
+        // Exempt from the Claude project ID check on purpose: this is where a
+        // chat gets its ID. Membership was resolved above.
         $production = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
 
         $notes = ProjectNotes::fetch($slug, $this->environment, $this->logger);
 
-        return ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes);
+        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes);
+        $caller = $this->bindingCaller();
+        $registry = BindingGuard::CALLER_USER === $caller ? ProjectBindings::fetch($slug, $this->environment, $this->logger) : null;
+        $info['binding'] = ProjectBindings::describe(BindingMode::load(), $caller, $this->portalUserId, $registry);
+
+        return $info;
     }
 
     // -----------------------------------------------------------------
@@ -1052,7 +1075,8 @@ final class ProjectsTools
      * is set up. Nothing is written into the project: the reply says what to do
      * next, which is to pull the framework files with arch_bootstrap_read and
      * save them into this Claude project's knowledge. Owners and contributors
-     * only. After it succeeds, pass the same claudeProjectId on every other
+     * only. In any later session, get the ID by calling arch_project_info
+     * (exempt from the ID check) and pass it as claudeProjectId on every other
      * arch-projects tool call for this project.
      *
      * @param string $slug              project slug

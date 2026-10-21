@@ -35,7 +35,8 @@
       {"name": "test-one-lane", "cmd": ["php", "tests/unit/test-one-lane.php"]},
       {"name": "test-session-lane-guard", "cmd": ["php", "tests/unit/test-session-lane-guard.php"]},
       {"name": "test-session-list", "cmd": ["php", "tests/unit/test-session-list.php"]},
-      {"name": "test-session-version", "cmd": ["php", "tests/unit/test-session-version.php"]}
+      {"name": "test-session-version", "cmd": ["php", "tests/unit/test-session-version.php"]},
+      {"name": "test-project-bindings", "cmd": ["php", "tests/unit/test-project-bindings.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
   }
