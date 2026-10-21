@@ -16,7 +16,8 @@ require_once __DIR__.'/BindingMode.php';
  * Pure function: no I/O. The caller supplies what Portal's registry says and
  * acts on the answer. It is deliberately not called for install_bootstrap,
  * which creates the binding, nor for the arch_bootstrap_fill_inception_row
- * tool; leaving those two out is the caller's job.
+ * tool, nor for arch_project_info, which is where a chat gets its ID (see
+ * ProjectBindings); leaving those out is the caller's job.
  *
  * Callers ($caller):
  *   user            an OAuth-authenticated person: the check applies
@@ -66,7 +67,7 @@ final class BindingGuard
             return self::result($mode, 'not_bootstrapped', 'project not bootstrapped, run bootstrap first', true);
         }
         if ('' === trim($claudeProjectId)) {
-            return self::result($mode, 'missing_id', 'this project is bootstrapped, so every call must include claudeProjectId (the GUID in the Claude project URL)', true);
+            return self::result($mode, 'missing_id', 'this project is bootstrapped, so every call must include claudeProjectId (the GUID in the Claude project URL); call arch_project_info, which is exempt from this check, to get it, and do not ask the user for it', true);
         }
         $id = ClaudeProjectId::normalize($claudeProjectId);
         if (null === $id) {
