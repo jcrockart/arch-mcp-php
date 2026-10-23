@@ -17,28 +17,54 @@ final class GateRunner
     /**
      * @param list<array{name: string, builtin?: string, cmd?: list<string>}> $steps
      *
-     * @return array{ok: bool, failedStep: ?string, output: string}
+     * 'output' is the readable transcript, each step's text under its "-- gate:"
+     * line; 'steps' is what each step that ran printed.
+     *
+     * @return array{ok: bool, failedStep: ?string, output: string, steps: list<array{name: string, text: string}>}
      */
     public static function run(string $repoPath, array $steps, string $branch, string $lane): array
     {
         $out = "Validating session '{$branch}' (lane: {$lane}) before commit...\n\n";
+        $ran = [];
 
         foreach ($steps as $step) {
             $out .= "-- gate: {$step['name']}\n";
             [$passed, $text] = self::runStep($repoPath, $step);
-            $out .= $text;
             if ('' !== $text && !str_ends_with($text, "\n")) {
-                $out .= "\n";
+                $text .= "\n";
             }
+            $ran[] = ['name' => $step['name'], 'text' => $text];
+            $out .= $text;
             if (!$passed) {
                 $out .= "\nCOMMIT ABORTED at gate '{$step['name']}'. Branch '{$branch}' remains open and unchanged. main is untouched.\n";
                 $out .= "Fix the errors above and run arch_session_commit again, or arch_session_discard.\n";
 
-                return ['ok' => false, 'failedStep' => $step['name'], 'output' => $out];
+                return ['ok' => false, 'failedStep' => $step['name'], 'output' => $out, 'steps' => $ran];
             }
         }
 
-        return ['ok' => true, 'failedStep' => null, 'output' => $out];
+        return ['ok' => true, 'failedStep' => null, 'output' => $out, 'steps' => $ran];
+    }
+
+    /**
+     * The transcript of a passing gate in the layout CommitOutput::compact
+     * reads: everything the steps printed first, then the "Validating session"
+     * line and one "-- gate:" line per step (the order arch.py's output had).
+     *
+     * @param list<array{name: string, text: string}> $ran
+     */
+    public static function passTranscript(array $ran, string $branch, string $lane): string
+    {
+        $out = '';
+        foreach ($ran as $r) {
+            $out .= $r['text'];
+        }
+        $out .= "Validating session '{$branch}' (lane: {$lane}) before commit...\n\n";
+        foreach ($ran as $r) {
+            $out .= "-- gate: {$r['name']}\n";
+        }
+
+        return $out;
     }
 
     /**
