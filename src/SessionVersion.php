@@ -36,36 +36,6 @@ final class SessionVersion
         return isset($lanes['code']) && SessionLaneGuard::stagesMetadata($repoPath, 'code') ? 'code' : 'metadata';
     }
 
-    /** Retired with the switch to the built-in session engine (GateConfig decides now). */
-    public static function needsBump(string $repoPath, string $lane): bool
-    {
-        return '' !== $lane && 'metadata' !== $lane && SessionLaneGuard::stagesMetadata($repoPath, $lane);
-    }
-
-    /**
-     * Retired with the switch to the built-in session engine: plan() then write().
-     *
-     * @param callable(list<string>): array{exit_code: int, stdout: string, stderr: string} $git
-     *
-     * @return array{ok: true, tag: string}|array{ok: false, error: string}
-     */
-    public static function apply(callable $git, string $repoPath, string $bump): array
-    {
-        if (!\in_array($bump, ['major', 'minor', 'patch'], true)) {
-            return ['ok' => false, 'error' => "invalid bump '{$bump}'"];
-        }
-        $branch = $git(['rev-parse', '--abbrev-ref', 'HEAD']);
-        if (0 !== $branch['exit_code'] || 'main' !== trim($branch['stdout'])) {
-            return ['ok' => false, 'error' => 'the checkout is not on main after the merge'];
-        }
-        $plan = self::plan($git, $repoPath, $bump);
-        if (true !== $plan['ok']) {
-            return $plan;
-        }
-
-        return self::write($git, $repoPath, $plan['version'], $plan['tag']);
-    }
-
     /**
      * The next version for a bump, checked but not written.
      *

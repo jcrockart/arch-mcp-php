@@ -100,9 +100,10 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->setContainer($container)
         ->setSession(new FileSessionStore($sessionDir))
         ->addTool([ProjectsTools::class, 'archSessionStart'], 'arch_session_start')
-        ->addTool([ProjectsTools::class, 'archCodegenPreview'], 'arch_codegen_preview')
+        ->addTool([ProjectsTools::class, 'archSessionValidate'], 'arch_session_validate')
         ->addTool([ProjectsTools::class, 'archSessionCommit'], 'arch_session_commit')
         ->addTool([ProjectsTools::class, 'archSessionDiscard'], 'arch_session_discard')
+        ->addTool([ProjectsTools::class, 'archSessionRecover'], 'arch_session_recover')
         ->addTool([ProjectsTools::class, 'archSessionStatus'], 'arch_session_status')
         ->addTool([ProjectsTools::class, 'archSessionWriteFile'], 'arch_session_write_file')
         ->addTool([ProjectsTools::class, 'archSessionReadFile'], 'arch_session_read_file')
@@ -459,10 +460,17 @@ $builder = Server::builder()
 if ($profile['session_tools']) {
     $builder = $builder
         ->addTool([ArchTools::class, 'archSessionStart'], 'arch_session_start')
-        ->addTool([ArchTools::class, 'archCodegenPreview'], 'arch_codegen_preview')
+        ->addTool([ArchTools::class, 'archSessionValidate'], 'arch_session_validate')
         ->addTool([ArchTools::class, 'archSessionCommit'], 'arch_session_commit')
         ->addTool([ArchTools::class, 'archSessionDiscard'], 'arch_session_discard')
         ->addTool([ArchTools::class, 'archSessionStatus'], 'arch_session_status');
+}
+
+// Recover is for owners and admins: the profile's pull flag, as for the pull
+// tool below. ArchTools::archSessionRecover checks the same flag when called.
+if ($profile['session_tools'] && ($profile['pull_allowed'] ?? false)) {
+    $builder = $builder
+        ->addTool([ArchTools::class, 'archSessionRecover'], 'arch_session_recover');
 }
 
 if ($profile['session_tools'] && isset($profile['lanes']['metadata'])) {

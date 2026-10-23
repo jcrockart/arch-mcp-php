@@ -1,9 +1,7 @@
 <?php
 // Offline proof that discarding a session saves its uncommitted work first
-// (SessionDiscard, and ArchTools::archSessionDiscard end to end). Throwaway
-// git repos with a stub arch.py that behaves like the real `session discard`
-// (checkout main, rename the branch to discarded/<name>, remove the session
-// file). No network, no secrets.
+// (SessionDiscard, and ArchTools::archSessionDiscard end to end through the
+// built-in SessionDiscarder). Throwaway git repos. No network, no secrets.
 //
 //     php tests/unit/test-session-discard.php
 $ROOT = __DIR__;
@@ -43,23 +41,9 @@ function git(string $dir, string $args): string {
     }
     return implode("\n", $o);
 }
-$STUB = <<<'PY'
-import json, subprocess
-from pathlib import Path
-REPO = Path(__file__).parent
-def sh(*a):
-    subprocess.run(["git", *a], cwd=REPO, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-s = json.loads((REPO / ".arch-session.json").read_text())
-b = s["branch"]
-sh("checkout", "main")
-sh("branch", "-m", b, "discarded/" + b)
-sh("checkout", "main")
-(REPO / ".arch-session.json").unlink()
-print("Session '%s' discarded." % b)
-PY;
 
 $base = sys_get_temp_dir().'/archdiscard'.getmypid();
-$make = static function (string $name, string $lane = 'code') use ($base, $STUB): string {
+$make = static function (string $name, string $lane = 'code') use ($base): string {
     $d = "$base/$name";
     mkdir("$d/src", 0775, true);
     mkdir("$d/other", 0775, true);
@@ -67,7 +51,6 @@ $make = static function (string $name, string $lane = 'code') use ($base, $STUB)
     git($d, 'config user.email t@example.com');
     git($d, 'config user.name t');
     file_put_contents("$d/arch-gate.json", json_encode(['code' => ['gate' => [], 'stage' => ['label' => 'code', 'paths' => ['src', 'notes.md']]]]));
-    file_put_contents("$d/arch.py", $STUB);
     file_put_contents("$d/src/a.php", "<?php\n\$a = 1;\n");
     file_put_contents("$d/other/o.txt", "other\n");
     file_put_contents("$d/notes.md", "hello\n");
@@ -196,12 +179,13 @@ check('...edits still in the tree', str_contains((string) file_get_contents("$d/
 $d = $make('e2e-nosession');
 unlink("$d/.arch-session.json");
 $r = $tools($d)->archSessionDiscard();
-check('no session: nothing to save, the underlying discard refuses as before', 0 !== $r['exit_code'] && !str_contains($r['stdout'], 'file(s)'));
+check('no session: nothing to save, the discard refuses', 0 !== $r['exit_code'] && !str_contains($r['stdout'], 'file(s)') && str_contains($r['stderr'], 'No active session to discard'));
 
 echo "\nfreeDiscardName(): older discarded branch of the same name\n";
 $d = $make('collide');
 git($d, 'branch discarded/mywork main');
-git($d, 'tag discard-marker/discarded/mywork/1700000000 discarded/mywork');
+$recent = (string) (time() - 86400); // inside the 7-day window, so the purge after the discard leaves it alone
+git($d, 'tag discard-marker/discarded/mywork/'.$recent.' discarded/mywork');
 file_put_contents("$d/src/a.php", "<?php\n\$a = 11;\n");
 $r = $tools($d)->archSessionDiscard();
 check('discard succeeds although discarded/mywork already existed', 0 === $r['exit_code']);
@@ -209,8 +193,8 @@ check('reply names the kept older branch', 1 === preg_match("/kept as 'discarded
 check('new work is on discarded/mywork', str_contains(git($d, 'show discarded/mywork:src/a.php'), '$a = 11;'));
 $old = trim(git($d, "for-each-ref --format='%(refname:short)' 'refs/heads/discarded/mywork-*'"));
 check('older branch still exists under a unique name', 1 === preg_match('#^discarded/mywork-\d+$#', $old));
-check('older marker tag moved to the older branch, same time', '' !== trim(git($d, "tag --list 'discard-marker/$old/1700000000'")));
-check('no marker tag is left naming discarded/mywork', '' === trim(git($d, "tag --list 'discard-marker/discarded/mywork/*'")));
+check('older marker tag moved to the older branch, same time', '' !== trim(git($d, "tag --list 'discard-marker/$old/$recent'")));
+check('discarded/mywork has only its own new marker, not the older one', 1 === count(array_filter(explode("\n", git($d, "tag --list 'discard-marker/discarded/mywork/*'")))) && '' === trim(git($d, "tag --list 'discard-marker/discarded/mywork/$recent'")));
 
 $d = $make('collide-twice');
 git($d, 'branch discarded/mywork main');
