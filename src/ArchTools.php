@@ -4,9 +4,12 @@
  * ARCH Agent-Connection MCP server — real, hosted implementation.
  *
  * Implements the tool definitions specified in agent-connection-layer.md /
- * Codegen CLI Design §8. Every tool below is a thin wrapper: it shells out
- * to arch.py exactly as a human would from the command line, and returns
- * its stdout/exit code. No git logic is duplicated here.
+ * Codegen CLI Design §8. The session tools (start, validate, commit, discard,
+ * recover) are thin wrappers over the session modules in this directory
+ * (SessionStart, SessionCommit, SessionDiscarder, SessionRecover, GateRunner),
+ * which hold the session and gate logic that used to live in each project's
+ * own copy of arch.py and validate.py. They return exit_code, stdout and
+ * stderr, the shape arch.py's output had.
  *
  * DESIGN NOTE (Codegen CLI Design §7.3, REVISITED 2026-09-19): this
  * server's repo is a durable local clone (git-backed, on this host's
@@ -51,15 +54,20 @@ namespace ArchMcp;
 use Psr\Log\LoggerInterface;
 
 // Required explicitly, like the other classes added after vendor/ was built.
+require_once __DIR__.'/Git.php';
+require_once __DIR__.'/GateRunner.php';
+require_once __DIR__.'/SessionCommit.php';
 require_once __DIR__.'/SessionDiscard.php';
+require_once __DIR__.'/SessionDiscarder.php';
 require_once __DIR__.'/SessionLaneGuard.php';
+require_once __DIR__.'/SessionRecover.php';
+require_once __DIR__.'/SessionStart.php';
 require_once __DIR__.'/SessionList.php';
 require_once __DIR__.'/SessionVersion.php';
 
 final class ArchTools
 {
     private string $repoPath;
-    private string $archPath;
     private string $sessionFile;
     private string $phpBinary;
 
@@ -143,7 +151,6 @@ final class ArchTools
         $this->bootstrapFillPortalUrl = is_string($profile['bootstrap_fill_portal_url'] ?? null) ? $profile['bootstrap_fill_portal_url'] : null;
         $this->dependencyManager = \is_string($profile['dependency_manager'] ?? null) ? $profile['dependency_manager'] : 'none';
         $this->dependencyExclude = $profile['dependency_exclude'] ?? null;
-        $this->archPath = $this->repoPath.'/arch.py';
         $this->sessionFile = $this->repoPath.'/.arch-session.json';
         $this->phpBinary = \PHP_BINARY;
     }
@@ -162,7 +169,7 @@ final class ArchTools
      * arch-gate.json code lane stages metadata/ (one-lane projects),
      * otherwise 'metadata' (see SessionVersion)
      *
-     * @return array<string, mixed> exit_code, stdout, stderr from arch.py
+     * @return array<string, mixed> exit_code, stdout, stderr
      */
     public function archSessionStart(string $name = '', string $lane = ''): array
     {
@@ -173,38 +180,40 @@ final class ArchTools
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this token has no '{$lane}' lane"];
         }
 
-        $args = ['session', 'start'];
-        if ('' !== $name) {
-            $args[] = $name;
-        }
-        $args[] = "--lane={$lane}";
+        $result = SessionStart::run($this->repoPath, $name, $lane, Git::in($this->repoPath));
+        $this->logger->info('session start.', ['lane' => $lane, 'exit_code' => $result['exit_code']]);
 
-        return $this->runArch($args);
+        return $result;
     }
 
     /**
-     * Run disposable, fuzzy-state codegen against the current session's
-     * in-progress metadata.
+     * Check the project's metadata/ the way a commit's validate step would,
+     * without committing anything. Read-only, needs no session, and never
+     * blocks: it reports what arch_session_commit would say. The verdict is in
+     * the text and in 'valid'; exit_code is 0 whenever the check could run.
      *
-     * No determinism guarantee, never blocks on validation errors
-     * (warn-only). Never a substitute for arch_session_commit — preview
-     * output is never eligible for canonical/downstream use.
+     * This checks metadata/ only. It does not run the lane's other gate steps
+     * (lint, tests); arch_session_commit runs those.
      *
-     * @return array<string, mixed> exit_code, stdout, stderr from arch.py
+     * @return array<string, mixed> exit_code, stdout, stderr, valid
      */
-    public function archCodegenPreview(): array
+    public function archSessionValidate(): array
     {
-        return $this->runArch(['codegen', 'preview']);
+        $r = GateRunner::validateOnly($this->repoPath);
+
+        return ['exit_code' => 0, 'stdout' => $r['output'], 'stderr' => '', 'valid' => $r['ok']];
     }
 
     /**
      * Attempt to commit the active session.
      *
-     * Runs full canonical validation first (the one hard, non-optional
-     * gate — constitution rule 5). On pass: atomic merge to main, version
-     * bump, canonical codegen runs, session retires. On fail: commit is
-     * aborted, branch left open and unchanged, main untouched — fix the
-     * errors and call this again, or call arch_session_discard.
+     * Runs the lane's gate steps first, in order, from the project root (the
+     * one hard, non-optional gate — constitution rule 5). On pass: the lane's
+     * stage paths are committed on the session branch, the branch is merged to
+     * main with --no-ff, and the session retires; a versioned lane then bumps
+     * VERSION.json and tags. On fail: commit is aborted at the first failing
+     * step, branch left open and unchanged, main untouched — fix the errors
+     * and call this again, or call arch_session_discard.
      *
      * Always merges to this host's own local `main` first, exactly as
      * before. REVISITED 2026-09-19 (see this file's header note and
@@ -228,43 +237,24 @@ final class ArchTools
      * with push_allowed = false (the default) gets no 'push' key at all
      * — behaviour is identical to before this change.
      *
-     * A commit that carries metadata/ gets a version whichever lane it ran in:
-     * the metadata lane (arch.py bumps, writes VERSION.json, tags), and a code
-     * lane whose stage paths include metadata/ (this server does the same
-     * right after the merge, see SessionVersion). A code lane without
-     * metadata/ in its stage paths is never versioned.
+     * Whether the commit is versioned is one rule, in GateConfig: the lane's
+     * "versioned" key in arch-gate.json if it has one; otherwise yes for the
+     * metadata lane and for any lane whose stage paths include metadata/. A
+     * versioned commit writes VERSION.json and tags vX.Y.Z after the merge; a
+     * failure there is a WARNING (and the 'version' key), never a failed commit.
      *
      * @param string $bump one of "major", "minor", "patch" (default "patch"), per 22.5 Semantic Versioning Policy
      *
-     * @return array<string, mixed> exit_code, stdout, stderr from arch.py, plus an optional 'push' key (see above)
+     * @return array<string, mixed> exit_code, stdout, stderr, plus optional 'version' and 'push' keys (see above)
      */
     public function archSessionCommit(string $bump = 'patch'): array
     {
-        if (!\in_array($bump, ['major', 'minor', 'patch'], true)) {
-            return ['exit_code' => 1, 'stdout' => '', 'stderr' => "invalid bump '{$bump}'"];
-        }
-
-        $lane = SessionLaneGuard::sessionLane($this->repoPath) ?? '';
-
-        $result = $this->runArch(['session', 'commit', "--{$bump}"]);
-        $versionedByArch = str_contains($result['stdout'], 'COMMITTED as v');
+        $result = SessionCommit::run($this->repoPath, $bump, Git::in($this->repoPath));
 
         // A passing commit prints every test line; keep only what matters
         // (see CommitOutput). A failing commit is left exactly as printed.
         if (0 === $result['exit_code']) {
             $result['stdout'] = CommitOutput::compact($result['stdout']);
-        }
-
-        // A commit that carries metadata/ is versioned whichever lane it ran
-        // in (see SessionVersion). arch.py versions the metadata lane itself.
-        // Like the push below, a failure here never turns the durable commit
-        // into a failed one: it is reported in 'version' and in stdout.
-        if (0 === $result['exit_code'] && !$versionedByArch && SessionVersion::needsBump($this->repoPath, $lane)) {
-            $version = SessionVersion::apply(fn (array $args): array => $this->execGit($args, $this->repoPath), $this->repoPath, $bump);
-            $result['version'] = $version;
-            $result['stdout'] = rtrim($result['stdout'])."\n".($version['ok']
-                ? "Versioned as {$version['tag']}: this commit carries metadata/.\n"
-                : "WARNING: the session was merged, but the version bump failed ({$version['error']}); main has no new version.\n");
         }
 
         if (0 !== $result['exit_code'] || !$this->pushAllowed) {
@@ -315,33 +305,45 @@ final class ArchTools
      * Since 2026-10-06 the session's uncommitted changes inside its lane's
      * stage paths are first saved as a snapshot commit on the session branch
      * (see SessionDiscard), so main's working tree is left clean and
-     * `arch session recover` brings the work back. If that snapshot cannot be
+     * arch_session_recover brings the work back. If that snapshot cannot be
      * made the discard is refused and nothing changes.
      *
-     * @return array<string, mixed> exit_code, stdout, stderr from arch.py
+     * @return array<string, mixed> exit_code, stdout, stderr
      */
     public function archSessionDiscard(): array
     {
-        $snap = SessionDiscard::snapshot(fn (array $args): array => $this->execGit($args, $this->repoPath), $this->repoPath);
-        if (true !== $snap['ok']) {
-            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'discard refused, the changes in this session could not be saved first: '.$snap['error']];
+        return SessionDiscarder::run($this->repoPath, Git::in($this->repoPath));
+    }
+
+    /**
+     * Bring a discarded session back as the active session, with the lane it
+     * had. Refused while another session is active, and for a profile that may
+     * not pull (project owners and admins only, the same flag that gates
+     * arch_core_git_pull). ProjectsTools applies the owner check itself and
+     * calls recoverSession().
+     *
+     * @param string $name name of the discarded session (the branch name without "discarded/")
+     * @param string $lane optional: restore it on this lane instead of the recorded one
+     *
+     * @return array<string, mixed> exit_code, stdout, stderr
+     */
+    public function archSessionRecover(string $name, string $lane = ''): array
+    {
+        if (!$this->pullAllowed) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token is not permitted to recover a discarded session'];
         }
 
-        $free = SessionDiscard::freeDiscardName(fn (array $args): array => $this->execGit($args, $this->repoPath), $this->repoPath);
-        if (true !== $free['ok']) {
-            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'discard refused: '.$free['error']];
+        return $this->recoverSession($name, $lane);
+    }
+
+    /** The recover step with no permission check; its callers decide who may. */
+    public function recoverSession(string $name, string $lane = ''): array
+    {
+        if ('' !== $lane && !isset($this->lanes[$lane])) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => "this token has no '{$lane}' lane"];
         }
 
-        $result = $this->runArch(['session', 'discard']);
-        clearstatcache(); // arch.py removed the session file; PHP must not answer from its stat cache
-        if (null !== $free['moved'] && 0 === $result['exit_code']) {
-            $result['stdout'] .= "An older discarded branch with the same name was kept as '{$free['moved']}'.\n";
-        }
-        if ($snap['snapshotted'] && 0 === $result['exit_code']) {
-            $result['stdout'] .= "Uncommitted changes ({$snap['files']} file(s)) were saved on the discarded branch, so main's working tree is clean; `arch session recover` brings them back.\n";
-        }
-
-        return $result;
+        return SessionRecover::run($this->repoPath, $name, Git::in($this->repoPath), $lane);
     }
 
     /**
@@ -350,11 +352,7 @@ final class ArchTools
      *
      * Read-only — always safe to call without side effects.
      *
-     * NOTE: arch.py itself has no 'status' subcommand (the same gap found
-     * while building the sandbox prototype of this server) — this reads
-     * .arch-session.json directly instead of shelling out, which is the
-     * one deliberate exception to "no logic of its own" in this file,
-     * since there is no CLI command yet to wrap.
+     * Reads .arch-session.json directly (the file SessionFile writes).
      *
      * @return array<string, mixed>
      */
@@ -537,8 +535,8 @@ final class ArchTools
 
     /**
      * Report the active session's lane, or '' if none is active.
-     * Mirrors arch.py's own default of 'metadata' for a session file
-     * with no explicit lane recorded.
+     * A session file with no explicit lane recorded counts as 'metadata',
+     * as SessionFile does.
      */
     private function activeSessionLane(): string
     {
@@ -551,7 +549,7 @@ final class ArchTools
     }
 
     /**
-     * Added 2026-09-16 — exposes arch.py's `code` lane (built and proven
+     * Added 2026-09-16 — exposes the `code` lane (built and proven
      * on core and mcp, 2026-09-07, see claude/proposal-code-lane-gate-
      * design.md) over MCP, so landing a real code-lane commit no longer
      * requires driving a terminal by hand. Mirrors archSessionWriteFile's
@@ -1192,59 +1190,6 @@ final class ArchTools
         }
 
         return $candidate;
-    }
-
-    /**
-     * @param list<string> $args
-     *
-     * @return array{exit_code: int, stdout: string, stderr: string}
-     */
-    private function runArch(array $args): array
-    {
-        $command = array_merge([$this->phpPickPython(), $this->archPath], $args);
-
-        $descriptorSpec = [
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
-
-        $process = proc_open($command, $descriptorSpec, $pipes, $this->repoPath);
-
-        if (!\is_resource($process)) {
-            $this->logger->error('Failed to spawn arch.py process.', ['command' => $command]);
-
-            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'failed to spawn arch.py'];
-        }
-
-        $stdout = stream_get_contents($pipes[1]) ?: '';
-        $stderr = stream_get_contents($pipes[2]) ?: '';
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $exitCode = proc_close($process);
-
-        $this->logger->info('arch.py invoked.', ['args' => $args, 'exit_code' => $exitCode]);
-
-        return ['exit_code' => $exitCode, 'stdout' => $stdout, 'stderr' => $stderr];
-    }
-
-    /**
-     * arch.py is plain-stdlib Python (argparse, json, subprocess,
-     * pathlib) with no third-party dependencies, so any reasonably
-     * current python3 on this host works — this just avoids hardcoding
-     * a path that may differ across hosts.
-     */
-    private function phpPickPython(): string
-    {
-        foreach (['python3', 'python'] as $candidate) {
-            $resolved = trim((string) shell_exec('command -v '.escapeshellarg($candidate).' 2>/dev/null'));
-            if ('' !== $resolved) {
-                return $resolved;
-            }
-        }
-
-        // Fall back to a bare name and let the OS PATH resolve it; a
-        // clearer error will surface from proc_open if nothing exists.
-        return 'python3';
     }
 
     private const ALLOWED_GIT_SUBCOMMANDS = ['status', 'diff', 'log', 'show', 'fetch'];

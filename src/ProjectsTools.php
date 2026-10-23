@@ -279,7 +279,13 @@ final class ProjectsTools
         return $t->archSessionStart($name, $lane);
     }
 
-    public function archCodegenPreview(string $slug, string $claudeProjectId = ''): array
+    /**
+     * Check the project's metadata/ the way a commit's validate step would,
+     * without committing. Read-only; needs no session. 'valid' says whether it
+     * would pass. It checks metadata/ only: arch_session_commit also runs the
+     * lane's other gate steps.
+     */
+    public function archSessionValidate(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
         if (\is_array($t)) {
@@ -289,7 +295,32 @@ final class ProjectsTools
             return $err;
         }
 
-        return $t->archCodegenPreview();
+        return $t->archSessionValidate();
+    }
+
+    /**
+     * Bring a discarded session back as the active session, on the lane it had
+     * (pass `lane` to choose another). Project owners and admins only. Refused
+     * while a session is active. `name` is the session's name, without the
+     * "discarded/" prefix; the discard reply names it.
+     */
+    public function archSessionRecover(string $slug, string $name, string $lane = '', string $claudeProjectId = ''): array
+    {
+        $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
+        if (\is_array($t)) {
+            return $t;
+        }
+        if (null !== ($err = $this->requireSessionTools($slug, $t))) {
+            return $err;
+        }
+        // Owners and admins hold the production profile's pull flag, the same
+        // one that gates arch_core_git_pull; contributors and viewers do not.
+        $prod = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
+        if (null === $prod || !$prod['pull_allowed']) {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'recovering a discarded session is for project owners and admins'];
+        }
+
+        return $t->recoverSession($name, $lane);
     }
 
     public function archSessionCommit(string $slug, string $bump = 'patch', string $claudeProjectId = ''): array
