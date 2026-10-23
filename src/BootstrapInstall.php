@@ -34,12 +34,13 @@ require_once __DIR__.'/BootstrapPlan.php';
  * the source changed, and are always named in the reply.
  *
  * Publishing: a newly created managed file is published as 'root' (written
- * into the project's folder, not web-served) so the schemas exist on disk for
- * validate.py. An update keeps whatever setting the file already has.
+ * into the project's folder, not web-served) so the schemas exist on disk in
+ * the project. An update keeps whatever setting the file already has.
  *
- * Deliberately NOT done here: writing project.config.json or running
- * validate.py. Provisioning writes the default config and the bootstrap
- * interview fills it in through session tools.
+ * Deliberately NOT done here: writing project.config.json or validating
+ * metadata. Provisioning writes the default config and the bootstrap
+ * interview fills it in through session tools; the validator is built into
+ * this server and runs at commit.
  *
  * Does no I/O of its own beyond the two callers. Returns an array for the tool
  * reply: never file contents, never hashes.

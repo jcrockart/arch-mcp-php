@@ -35,8 +35,8 @@ CTX = ssl.create_default_context()
 # anything interesting — a fixed list silently tests nothing for one of
 # them. The first version of this script used an rcp-shaped list, so for
 # james-arch-collab every probe resolved to a path that never existed and
-# passed for the wrong reason: ../arch.py, the exact file DEPLOY.md
-# claims is unreachable, was never actually tried.
+# passed for the wrong reason: the repo-root files DEPLOY.md claims are
+# unreachable were never actually tried.
 GENERIC_ESCAPES = [
     "../../../../etc/passwd",
     "/etc/passwd",
@@ -50,8 +50,12 @@ def escapes_for(subdir):
     probes = list(GENERIC_ESCAPES)
     if up:
         # Lane is below the root: one level up is the repo itself.
-        probes += [up + "arch.py",
-                   up + "validate.py",
+        # arch-gate.json and .gitignore sit in the root of every project, so
+        # these probes hit a file that really exists. (They used to name
+        # arch.py and validate.py, which new projects no longer carry, so
+        # they passed without testing anything.)
+        probes += [up + "arch-gate.json",
+                   up + ".gitignore",
                    up + "metadata/todo.json",
                    up + ".git/config"]
     else:

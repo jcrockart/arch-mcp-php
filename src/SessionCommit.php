@@ -70,7 +70,7 @@ final class SessionCommit
         if (!$gate['ok']) {
             return SessionResult::fail('', $gate['output']);
         }
-        $out = $gate['output'];
+        $out = GateRunner::passTranscript($gate['steps'], $branch, $lane);
 
         // Commit the session's own changes onto its branch first, so the
         // merge brings them to main. An empty session is valid.
