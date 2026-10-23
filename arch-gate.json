@@ -41,6 +41,6 @@
       {"name": "test-gate", "cmd": ["php", "tests/unit/test-gate.php"]},
       {"name": "test-session-engine", "cmd": ["php", "tests/unit/test-session-engine.php"]}
     ],
-    "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock"]}
+    "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock", "README.md"]}
   }
 }
