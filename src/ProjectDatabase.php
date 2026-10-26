@@ -22,10 +22,19 @@ namespace ArchMcp;
  *     string), `file` is null with a note. Never a guess.
  *   - `exists` says whether the file is there.
  *
+ *   - `how_app_opens` (added 2026-10-26, ARCH-68) is fixed text telling a build
+ *     chat how app code opens the database: from config.php, never a typed
+ *     path. It is the same for every project and holds no project value.
+ *
  * Pure apart from reading that one file and checking the database file exists.
+ * argument() and literal() are public so ProjectMail reads config.php the same way.
  */
 final class ProjectDatabase
 {
+    private const HOW_SQLITE = "Open the database from the DB_PATH constant in config.php, never from a path typed into the code. config.php is at the project root, beside public/, so from a file directly in public/: require dirname(__DIR__) . '/config.php'; new PDO('sqlite:' . DB_PATH); Portal provisions config.php (git-ignored, one per environment): do not create or edit it. The database tools use the same constant, so the app and the tools always see the same file. Details: Confluence AW page 58818561.";
+
+    private const HOW_OTHER = "Read the connection settings from the constants in config.php, never type them into the code. config.php is at the project root, beside public/; Portal provisions it (git-ignored, one per environment): do not create or edit it. The database tools use the same settings. Details: Confluence AW page 58818561.";
+
     /**
      * @return array{engine: ?string, file: ?string, exists: ?bool, settings_file?: string, note?: string}
      */
@@ -34,7 +43,7 @@ final class ProjectDatabase
         $none = ['engine' => null, 'file' => null, 'exists' => null];
         $config = $dir.'/config.php';
         if ('' === $dir || !is_file($config)) {
-            return $none + ['note' => 'no config.php in this checkout, so no database is configured here'];
+            return $none + ['note' => 'no config.php in this checkout, so no database is configured here; Portal creates config.php when it provisions a database for this environment'];
         }
         $text = (string) file_get_contents($config);
 
@@ -53,10 +62,10 @@ final class ProjectDatabase
             }
         }
         if ('sqlite' !== $engine) {
-            return ['engine' => $engine, 'file' => null, 'exists' => null, 'note' => 'the connection settings are in config.php and are not shown'];
+            return ['engine' => $engine, 'file' => null, 'exists' => null, 'note' => 'the connection settings are in config.php and are not shown', 'how_app_opens' => self::HOW_OTHER];
         }
 
-        $out = ['engine' => 'sqlite', 'file' => null, 'exists' => null, 'settings_file' => 'config.php'];
+        $out = ['engine' => 'sqlite', 'file' => null, 'exists' => null, 'settings_file' => 'config.php', 'how_app_opens' => self::HOW_SQLITE];
         $pathArg = self::argument($text, 'DB_PATH');
         if (null === $pathArg) {
             return $out + ['note' => str_contains($text, 'DB_PATH')
@@ -93,7 +102,7 @@ final class ProjectDatabase
     }
 
     /** The raw second argument of `define('NAME', ...);` at the start of a line or after a `;`, or null. */
-    private static function argument(string $text, string $name): ?string
+    public static function argument(string $text, string $name): ?string
     {
         if (1 !== preg_match('/(?:^|;)[ \t]*define\(\s*([\'"])'.preg_quote($name, '/').'\1\s*,\s*(.+?)\s*\)\s*;/m', $text, $m)) {
             return null;
@@ -103,7 +112,7 @@ final class ProjectDatabase
     }
 
     /** A plain quoted string with nothing to evaluate in it, or null. */
-    private static function literal(string $arg): ?string
+    public static function literal(string $arg): ?string
     {
         if (1 === preg_match('/^\'([^\'\\\\]*)\'$/', $arg, $m)) {
             return $m[1];
