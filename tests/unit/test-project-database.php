@@ -144,6 +144,20 @@ check('no secret, host or absolute path in the whole reply', !str_contains(json_
 $r = ProjectInfo::describe('demo', 'production', $p($base.'/none'), null);
 check('a checkout with no config.php still answers', true === $r['success'] && null === $r['staging']['database']['engine']);
 
+echo "\nhow_app_opens: fixed guidance, no project value\n";
+$d = checkout("define('DB_ENGINE', 'sqlite');\ndefine('DB_PATH', __DIR__ . '/data/h.sqlite');\n");
+$r = ProjectDatabase::forCheckout($d);
+check('sqlite: tells the app to open DB_PATH from config.php, never a typed path', isset($r['how_app_opens']) && str_contains($r['how_app_opens'], 'DB_PATH') && str_contains($r['how_app_opens'], 'config.php') && str_contains($r['how_app_opens'], 'never'));
+check('says Portal provisions config.php and not to create or edit it', str_contains($r['how_app_opens'], 'Portal provisions') && str_contains($r['how_app_opens'], 'do not create or edit it'));
+check('holds no project value: no file name, no path', !str_contains($r['how_app_opens'], 'h.sqlite') && !str_contains($r['how_app_opens'], $base));
+$d = checkout("define('DB_ENGINE', 'sqlite');\ndefine('DB_PATH', '/var/lib/elsewhere/app.sqlite');\n");
+check('still given when the file is outside the project folder', isset(ProjectDatabase::forCheckout($d)['how_app_opens']));
+$d = checkout("define('DB_ENGINE', 'mysql');\ndefine('DB_PASS', 'pw-hao-secret');\n");
+$r = ProjectDatabase::forCheckout($d);
+check('mysql: a general line with no secret and no sqlite example', isset($r['how_app_opens']) && !str_contains(json_encode($r), 'pw-hao-secret') && !str_contains($r['how_app_opens'], 'PDO'));
+$r = ProjectDatabase::forCheckout($base.'/none');
+check('no config.php: no guidance, and the note says Portal creates it', !isset($r['how_app_opens']) && str_contains($r['note'], 'no config.php') && str_contains($r['note'], 'Portal creates'));
+
 exec('rm -rf '.escapeshellarg($base));
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail > 0 ? 1 : 0);

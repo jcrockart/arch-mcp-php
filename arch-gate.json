@@ -30,6 +30,7 @@
       {"name": "test-project-urls", "cmd": ["php", "tests/unit/test-project-urls.php"]},
       {"name": "test-project-notes", "cmd": ["php", "tests/unit/test-project-notes.php"]},
       {"name": "test-project-database", "cmd": ["php", "tests/unit/test-project-database.php"]},
+      {"name": "test-project-mail", "cmd": ["php", "tests/unit/test-project-mail.php"]},
       {"name": "test-db-skipped", "cmd": ["php", "tests/unit/test-db-skipped.php"]},
       {"name": "test-db-ledger", "cmd": ["php", "tests/unit/test-db-ledger.php"]},
       {"name": "test-one-lane", "cmd": ["php", "tests/unit/test-one-lane.php"]},

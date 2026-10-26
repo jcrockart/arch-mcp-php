@@ -4,6 +4,7 @@ namespace ArchMcp;
 
 require_once __DIR__.'/ProjectUrls.php';
 require_once __DIR__.'/ProjectDatabase.php';
+require_once __DIR__.'/ProjectMail.php';
 
 /**
  * One-call project summary, added 2026-10-06 (arch_project_info): what a
@@ -85,6 +86,7 @@ final class ProjectInfo
         }
         $view['code_stage_paths'] = self::stagePaths((string) ($p['root'] ?? ''));
         $view['database'] = ProjectDatabase::forCheckout($dir);
+        $view['mail'] = ProjectMail::forCheckout($dir);
         $view['git'] = self::gitState($dir);
         $view['session'] = self::session((string) ($p['root'] ?? ''));
 
