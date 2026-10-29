@@ -45,7 +45,8 @@
       {"name": "test-validate", "cmd": ["php", "tests/unit/test-validate.php"]},
       {"name": "test-gate", "cmd": ["php", "tests/unit/test-gate.php"]},
       {"name": "test-session-engine", "cmd": ["php", "tests/unit/test-session-engine.php"]},
-      {"name": "test-incoming-migrations", "cmd": ["php", "tests/unit/test-incoming-migrations.php"]}
+      {"name": "test-incoming-migrations", "cmd": ["php", "tests/unit/test-incoming-migrations.php"]},
+      {"name": "test-project-host-facts", "cmd": ["php", "tests/unit/test-project-host-facts.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock", "README.md"]}
   }
