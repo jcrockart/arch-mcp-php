@@ -786,16 +786,23 @@ final class ProjectsTools
      * Owner. Read-only, and always about production, whatever the staging
      * database looks like. To apply them use db_migrate_prod. Files ignored for
      * lacking the `-- id:` and `-- type:` header are listed under `skipped`.
+     * Pass includeIncoming true to also get `incoming`: the migrations on
+     * origin/<pull_branch> that are not yet in the production checkout (so
+     * not in `pending`) and not applied to the production database, each with
+     * its destructive flag, so they can be reviewed BEFORE the pull. It runs
+     * `git fetch origin` and reads files from origin without touching the
+     * working tree.
      *
-     * @param string $slug project slug
+     * @param string $slug            project slug
+     * @param bool   $includeIncoming also list migrations a pull would bring in (default false)
      */
-    public function archDbPendingProd(string $slug, string $claudeProjectId = ''): array
+    public function archDbPendingProd(string $slug, bool $includeIncoming = false, string $claudeProjectId = ''): array
     {
         $p = $this->dbProfile($slug, 'production', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
-        $result = DbTools::pending($p['profile'], 'production');
+        $result = DbTools::pending($p['profile'], 'production', $includeIncoming);
         $this->logger->info('db_pending_prod', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'portal_service' => $this->portalService, 'success' => $result['success'] ?? false]);
 
         return $result;

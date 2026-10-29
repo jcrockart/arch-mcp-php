@@ -3,6 +3,7 @@
 namespace ArchMcp;
 
 require_once __DIR__.'/ConfirmIds.php';
+require_once __DIR__.'/IncomingMigrations.php';
 
 /**
  * The work behind db_read_staging, db_read_prod, db_pending_staging,
@@ -146,7 +147,7 @@ final class DbTools
      *
      * @return array<string, mixed>
      */
-    public static function pending(array $profile, string $kind): array
+    public static function pending(array $profile, string $kind, bool $includeIncoming = false): array
     {
         $root = self::coreRoot($profile);
         if (null === $root) {
@@ -193,6 +194,22 @@ final class DbTools
         }
         if ([] === $list) {
             $out['note'] = [] === $skipped ? 'nothing pending' : 'nothing pending, but '.\count($skipped).' file(s) in db/migrations were ignored: see skipped';
+        }
+
+        // Opt-in: what a pull would bring in that is not in this checkout yet (see
+        // IncomingMigrations). Never changes `pending`, which stays about the checkout.
+        if ($includeIncoming) {
+            $sub = $profile['lanes']['core'] ?? '';
+            $branch = $profile['pull_branch'] ?? '';
+            $out['incoming'] = \is_string($branch) && '' !== $branch && \is_string($profile['root'] ?? null)
+                ? IncomingMigrations::forPull(
+                    (string) $profile['root'],
+                    \is_string($sub) ? $sub : '',
+                    $branch,
+                    DbMigrations::appliedIds($conn['pdo']),
+                    array_map(static fn (array $m): string => (string) $m['id'], $declared)
+                )
+                : ['available' => false, 'error' => 'this profile has no pull_branch'];
         }
 
         return $out;
