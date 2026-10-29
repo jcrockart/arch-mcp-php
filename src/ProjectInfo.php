@@ -27,10 +27,11 @@ final class ProjectInfo
      * @param array<string, mixed>      $staging    profile the staging-kind tools resolve to
      * @param array<string, mixed>|null $production profile the production-kind tools resolve to, or null if none
      * @param array{text: ?string, truncated: bool, unavailable: bool}|null $notes the project's environment notes (ProjectNotes), or null if not read
+     * @param array{environments: ?array<string, array<string, mixed>>, unavailable: bool}|null $hostFacts the project's host facts (ProjectHostFacts), or null if not read
      *
      * @return array<string, mixed>
      */
-    public static function describe(string $slug, string $portalEnvironment, array $staging, ?array $production, ?array $notes = null): array
+    public static function describe(string $slug, string $portalEnvironment, array $staging, ?array $production, ?array $notes = null, ?array $hostFacts = null): array
     {
         $out = [
             'success' => true,
@@ -46,6 +47,11 @@ final class ProjectInfo
         }
         if (true === ($notes['unavailable'] ?? false)) {
             $out['environment_notes_unavailable'] = true;
+        }
+        // Machine-collected host facts (Portal), kept apart from the hand-written environment_notes above.
+        $out['host_facts'] = $hostFacts['environments'] ?? null;
+        if (true === ($hostFacts['unavailable'] ?? false)) {
+            $out['host_facts_unavailable'] = true;
         }
         $out['same_checkout'] = null !== $production && self::checkoutDir($staging) === self::checkoutDir($production);
         if ('production' === ($staging['profile_environment'] ?? null)) {

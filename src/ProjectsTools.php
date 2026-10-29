@@ -23,6 +23,7 @@ require_once __DIR__.'/DbTools.php';
 require_once __DIR__.'/BootstrapRegister.php';
 require_once __DIR__.'/BootstrapRead.php';
 require_once __DIR__.'/ProjectNotes.php';
+require_once __DIR__.'/ProjectHostFacts.php';
 require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
 require_once __DIR__.'/ProjectBindings.php';
@@ -661,7 +662,8 @@ final class ProjectsTools
 
         $notes = ProjectNotes::fetch($slug, $this->environment, $this->logger);
 
-        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes);
+        $hostFacts = ProjectHostFacts::fetch($slug, $this->environment, $this->logger);
+        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes, $hostFacts);
         $caller = $this->bindingCaller();
         $registry = BindingGuard::CALLER_USER === $caller ? ProjectBindings::fetch($slug, $this->environment, $this->logger) : null;
         $info['binding'] = ProjectBindings::describe(BindingMode::load(), $caller, $this->portalUserId, $registry);
