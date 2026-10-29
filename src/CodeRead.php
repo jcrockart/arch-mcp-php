@@ -109,7 +109,7 @@ final class CodeRead
     public static function search(ArchTools $tools, string $text, string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = self::DEFAULT_RESULTS): array
     {
         if ('' === $text) {
-            return ['success' => false, 'error' => 'search text must not be empty'];
+            return ['success' => false, 'error' => 'no search text given: pass the exact text to look for as `text` (a literal substring, not a regex; `pattern` is accepted as an alias)'];
         }
         $maxResults = max(1, min($maxResults, self::MAX_RESULTS));
 
