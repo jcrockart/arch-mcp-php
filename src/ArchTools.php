@@ -58,6 +58,7 @@ require_once __DIR__.'/Git.php';
 require_once __DIR__.'/GateRunner.php';
 require_once __DIR__.'/SessionCommit.php';
 require_once __DIR__.'/SessionDiscard.php';
+require_once __DIR__.'/CodeDelete.php';
 require_once __DIR__.'/SessionDiscarder.php';
 require_once __DIR__.'/SessionLaneGuard.php';
 require_once __DIR__.'/SessionRecover.php';
@@ -531,6 +532,66 @@ final class ArchTools
     private function resolveMetadataPath(string $relativePath): ?string
     {
         return $this->resolveScopedPath($relativePath, 'metadata');
+    }
+
+    /**
+     * Delete ONE file from the code lane (arch_code_delete_file), added
+     * 2026-10-29. Mirrors archCodeWriteFile's checks in the same order: an
+     * active session, on the code lane; then the file-type allowlist and the
+     * stage-path scoping (resolveCodePath). On top of those come CodeDelete's
+     * two refusals: arch-gate.json and metadata/project.config.json are never
+     * deleted, and neither is a file that is itself a stage-path entry (a
+     * session commit could not record that; see CodeDelete). Files only, never
+     * a folder. The file is removed from the working tree; the session commit
+     * then stages the deletion (git add -A on the stage paths), so it is gone
+     * from the commit. Nothing is written to git here.
+     *
+     * @param string $path relative path inside this token's code lane
+     *
+     * @return array<string, mixed>
+     */
+    public function archCodeDeleteFile(string $path): array
+    {
+        if (!is_file($this->sessionFile)) {
+            return ['success' => false, 'error' => 'no active session — call arch_session_start with lane=code first'];
+        }
+        if ('code' !== $this->activeSessionLane()) {
+            return ['success' => false, 'error' => 'active session is not on the code lane'];
+        }
+        if (null !== ($why = CodeDelete::protectedRefusal($path))) {
+            return ['success' => false, 'error' => $why];
+        }
+        if (!$this->extensionAllowed($path)) {
+            return ['success' => false, 'error' => "file type not permitted for this token: '{$path}'"];
+        }
+
+        $resolved = $this->resolveCodePath($path);
+        if (null === $resolved) {
+            return ['success' => false, 'error' => $this->codePathError($path)];
+        }
+
+        // resolveCodePath succeeded, so arch-gate.json exists and lists the stage paths.
+        $gate = json_decode((string) file_get_contents($this->repoPath.'/arch-gate.json'), true);
+        $stagePaths = \is_array($gate['code']['stage']['paths'] ?? null) ? $gate['code']['stage']['paths'] : [];
+        if (null !== ($why = CodeDelete::stageEntryRefusal($path, $stagePaths))) {
+            return ['success' => false, 'error' => $why];
+        }
+
+        if (is_dir($resolved)) {
+            return ['success' => false, 'error' => "'{$path}' is a folder; delete its files one at a time (arch_code_list_files shows them)"];
+        }
+        if (!is_file($resolved)) {
+            return ['success' => false, 'error' => "'{$path}' does not exist"];
+        }
+
+        $bytes = (int) filesize($resolved);
+        if (!unlink($resolved)) {
+            return ['success' => false, 'error' => "failed to delete '{$path}'"];
+        }
+
+        $this->logger->info('Code-lane file deleted.', ['path' => $path, 'bytes' => $bytes]);
+
+        return ['success' => true, 'path' => $path, 'deleted' => true, 'bytes' => $bytes];
     }
 
     /**

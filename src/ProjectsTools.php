@@ -12,6 +12,7 @@ require_once __DIR__.'/ProdState.php';
 require_once __DIR__.'/CodeEdit.php';
 require_once __DIR__.'/CodeEditMany.php';
 require_once __DIR__.'/CodeRead.php';
+require_once __DIR__.'/CodeReadMany.php';
 require_once __DIR__.'/ProjectInfo.php';
 require_once __DIR__.'/DbSql.php';
 require_once __DIR__.'/DbMigrations.php';
@@ -484,6 +485,53 @@ final class ProjectsTools
     }
 
     /**
+     * Delete ONE file from the code lane. Needs an active session on the code
+     * lane, like arch_code_write_file, and obeys the same rules: only paths
+     * inside the lane's stage paths (arch-gate.json code.stage.paths) and only
+     * file types the project may write. Refused: arch-gate.json and
+     * metadata/project.config.json (edit them, never delete), a folder, a file
+     * that does not exist, and a file that is itself a stage path such as
+     * README.md (only files inside a stage folder like src/ or tests/ can be
+     * deleted). The file is removed from the working tree and the session
+     * commit records the deletion: it is gone from the commit, not just
+     * emptied. There is no rename tool: rename = arch_code_write_file for the
+     * new path, then this tool for the old one. Reply: path, deleted, bytes.
+     *
+     * @param string $slug project slug
+     * @param string $path file path inside the code lane, e.g. "src/Old.php"
+     */
+    public function archCodeDeleteFile(string $slug, string $path, string $claudeProjectId = ''): array
+    {
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
+
+        return \is_array($t) ? $t : $t->archCodeDeleteFile($path);
+    }
+
+    /**
+     * Read several code-lane files in one call: the companion of
+     * arch_code_list_files (list the files, then read the ones you need).
+     * `paths` is a JSON list of file paths, e.g. ["src/a.php","src/b.php"]
+     * (one path per line, or comma-separated, also works). Returns `files`,
+     * one entry per path in the order given: {path, success, bytes, content},
+     * or {path, success: false, error} for a path that cannot be read
+     * (missing, outside the stage paths, not UTF-8 text), which never fails the
+     * call. Limits: 40 files and 400000 bytes of text per call. Whole files
+     * only: a file that would pass the byte limit is not returned (its entry
+     * says so; read it alone with arch_code_read_file, using start/end for
+     * part of it), paths beyond 40 are listed under `not_read`, and
+     * `truncated` is true with a `note`. Needs no session.
+     *
+     * @param string $slug  project slug
+     * @param string $paths JSON list of file paths inside the code lane (or one per line, or comma-separated)
+     */
+    public function archCodeReadMany(string $slug, string $paths, string $claudeProjectId = ''): array
+    {
+        $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
+
+        return \is_array($t) ? $t : CodeReadMany::run($t, $paths);
+    }
+
+    /**
      * Change ONE exact piece of text in a code-lane file, without resending
      * the whole file. `old` must match the file exactly once, byte for byte
      * (whitespace and line endings included); zero matches or more than one
@@ -536,7 +584,7 @@ final class ProjectsTools
 
     /**
      * Find where some text appears across the code lane's files. The
-     * argument is `text` (there is no `pattern` argument): a plain literal
+     * argument is `text` (`pattern` is accepted as an alias for it): a plain literal
      * substring match, not a regular expression, so characters like
      * ( . * mean themselves. Case-sensitive unless ignoreCase is true.
      * Returns matches as {path, line, text} (text is the matching line,
@@ -548,16 +596,20 @@ final class ProjectsTools
      * arch_code_read_file with start/end to see the surrounding lines.
      *
      * @param string $slug       project slug
-     * @param string $text       the exact text to look for: a literal substring, not a regex
+     * @param string $text       the exact text to look for: a literal substring, not a regex (give this or `pattern`)
      * @param string $pathPrefix optional: only search paths starting with this
      * @param bool   $ignoreCase match upper and lower case alike (default false)
      * @param int    $maxResults most matches to return (default 50, max 200)
+     * @param string $pattern    optional: an alias for `text`, used when `text` is empty
      */
-    public function archCodeSearch(string $slug, string $text, string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = 50, string $claudeProjectId = ''): array
+    public function archCodeSearch(string $slug, string $text = '', string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = 50, string $claudeProjectId = '', string $pattern = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
+        if (\is_array($t)) {
+            return $t;
+        }
 
-        return \is_array($t) ? $t : CodeRead::search($t, $text, $pathPrefix, $ignoreCase, $maxResults);
+        return CodeRead::search($t, '' !== $text ? $text : $pattern, $pathPrefix, $ignoreCase, $maxResults);
     }
 
     /**
@@ -757,7 +809,8 @@ final class ProjectsTools
      * destructive (declared schema-destructive or transactional data, or its
      * SQL drops, deletes, renames or alters away something) NOTHING is applied
      * and the reply lists them with their SQL; pass their ids in
-     * `confirmDestructive` to run them. The reply's `safe_up_to` is the last
+     * `confirmDestructive` to run them (the reply names the exact ids to pass,
+     * in `confirm_with`). The reply's `safe_up_to` is the last
      * migration before the first destructive one. To see what is pending
      * without applying, use db_pending_staging. Files ignored for lacking the
      * `-- id:` and `-- type:` header are listed under `skipped`. The
@@ -766,7 +819,7 @@ final class ProjectsTools
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id
-     * @param string $confirmDestructive optional: comma-separated ids of destructive migrations to allow
+     * @param string $confirmDestructive optional: ids of destructive migrations to allow, comma-separated (a,b) or as a JSON list (["a","b"]); spaces are fine
      */
     public function archDbMigrateStaging(string $slug, string $upTo = '', string $confirmDestructive = '', string $claudeProjectId = ''): array
     {
@@ -792,7 +845,7 @@ final class ProjectsTools
      *
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id
-     * @param string $confirmDestructive only honoured when Portal itself is the caller
+     * @param string $confirmDestructive only honoured when Portal itself is the caller; same formats as db_migrate_staging (comma-separated, or a JSON list)
      */
     public function archDbMigrateProd(string $slug, string $upTo = '', string $confirmDestructive = '', string $claudeProjectId = ''): array
     {

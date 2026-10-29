@@ -2,6 +2,8 @@
 
 namespace ArchMcp;
 
+require_once __DIR__.'/ConfirmIds.php';
+
 /**
  * The work behind db_read_staging, db_read_prod, db_pending_staging,
  * db_pending_prod, db_migrate_staging and db_migrate_prod. ProjectsTools
@@ -82,14 +84,16 @@ final class DbTools
         $skipped = DbMigrations::listSkipped($root.'/db/migrations');
         $withSkipped = static fn (array $r): array => [] === $skipped ? $r : $r + ['skipped' => $skipped];
 
-        $confirmed = $mayConfirm
-            ? array_values(array_filter(array_map('trim', explode(',', $confirmDestructive)), static fn (string $s): bool => '' !== $s))
-            : [];
+        $parsed = ConfirmIds::parse($confirmDestructive);
+        $confirmed = $mayConfirm ? $parsed['ids'] : [];
         // A brand-new production database has nothing to lose: the destructive check is waived
         // for it. Judged once, before anything is applied (see DbFreshCheck).
         $fresh = 'production' === $kind && DbFreshCheck::isFresh($pdo);
         if ($fresh) {
             $confirmed = array_map(static fn (array $m): string => (string) $m['id'], $pending);
+        }
+        if ($mayConfirm && !$fresh && isset($parsed['error'])) {
+            return $withSkipped(['success' => false, 'error' => 'nothing was applied: '.$parsed['error']]);
         }
         $plan = DbMigrations::plan($pending, trim($upTo), $confirmed);
         if (isset($plan['error'])) {
@@ -97,14 +101,16 @@ final class DbTools
         }
 
         if ([] !== $plan['unconfirmed']) {
-            $how = $mayConfirm
-                ? 'pass confirmDestructive with their ids to run them'
-                : 'destructive migrations on production are confirmed in Portal, not from a chat';
             $out = [
                 'success' => false,
-                'error' => 'nothing was applied: '.\count($plan['unconfirmed']).' destructive migration(s) in the selection; '.$how,
+                'error' => $mayConfirm
+                    ? ConfirmIds::refusal($plan['unconfirmed'], $plan['selected'], $confirmed)
+                    : 'nothing was applied: '.\count($plan['unconfirmed']).' destructive migration(s) in the selection; destructive migrations on production are confirmed in Portal, not from a chat',
                 'destructive' => $plan['unconfirmed'],
             ];
+            if ($mayConfirm) {
+                $out['confirm_with'] = implode(',', ConfirmIds::destructiveIds($plan['selected']));
+            }
             if (null !== $plan['safe_up_to']) {
                 $out['safe_up_to'] = $plan['safe_up_to'];
                 $out['hint'] = "upTo='{$plan['safe_up_to']}' applies everything before the first destructive one";
