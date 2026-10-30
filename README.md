@@ -38,6 +38,15 @@ assets (`arch_assets_*`), core git (`arch_core_git_*`), production state
 (`arch_prod_state`), dependency install, database reads and migrations
 (`db_*`), and bootstrap install (`install_bootstrap`).
 
+Chat provisioning (ARCH-74): `arch_provision_request` and `arch_provision_status`
+call Portal's `api_provision.php` with the caller's own token and hand Portal's
+replies back unchanged. They are registered only where the deploy-time file
+`provisioning-tools.json` (in the secrets directory, outside git, e.g.
+`{"staging": true, "production": false}`) sets the connector's environment to
+exactly `true`; with no file they are not offered. Code: `ProvisionRequest`,
+`ProvisioningSwitch`. `arch_project_info` also returns a `portal` block (the
+Portal address for this connector and the project's Portal page: `PortalLinks`).
+
 ## Tests
 
 `tests/unit/test-*.php` are the commit gate's test steps (see

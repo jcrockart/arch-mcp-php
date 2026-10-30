@@ -24,12 +24,14 @@ require_once dirname(__DIR__).'/src/OAuthBearer.php';
 require_once dirname(__DIR__).'/src/BreakglassAuth.php';
 require_once dirname(__DIR__).'/src/PortalProjectResolver.php';
 require_once dirname(__DIR__).'/src/ProjectsTools.php';
+require_once dirname(__DIR__).'/src/ProvisioningSwitch.php';
 
 use ArchMcp\ArchProfiles;
 use ArchMcp\ArchTools;
 use ArchMcp\BreakglassAuth;
 use ArchMcp\OAuthBearer;
 use ArchMcp\ProjectsTools;
+use ArchMcp\ProvisioningSwitch;
 use Laminas\HttpHandlerRunner\Emitter\SapiEmitter;
 use Mcp\Capability\Registry\Container;
 use Mcp\Schema\ServerCapabilities;
@@ -88,13 +90,13 @@ $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
  * once, 2026-09-28, when the staging/production split added a third
  * near-identical route block, to stop this list drifting between them.
  */
-function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tools, string $serverName, string $sessionDir): Server
+function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tools, string $serverName, string $sessionDir, bool $provisioningTools = false): Server
 {
     $container = new Container();
     $container->set(LoggerInterface::class, $logger);
     $container->set(ProjectsTools::class, $tools);
 
-    return Server::builder()
+    $builder = Server::builder()
         ->setServerInfo($serverName, '0.3.0')
         ->setLogger($logger)
         ->setContainer($container)
@@ -138,7 +140,18 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
         ->addTool([ProjectsTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row')
         ->addTool([ProjectsTools::class, 'installBootstrap'], 'install_bootstrap')
-        ->addTool([ProjectsTools::class, 'archBootstrapRead'], 'arch_bootstrap_read')
+        ->addTool([ProjectsTools::class, 'archBootstrapRead'], 'arch_bootstrap_read');
+
+    // The chat provisioning tools (ARCH-74) are registered only where
+    // ProvisioningSwitch says so for this connector, because registering a tool
+    // shows it to every chat. The break-glass address never gets them.
+    if ($provisioningTools) {
+        $builder = $builder
+            ->addTool([ProjectsTools::class, 'archProvisionRequest'], 'arch_provision_request')
+            ->addTool([ProjectsTools::class, 'archProvisionStatus'], 'arch_provision_status');
+    }
+
+    return $builder
         ->setCapabilities(new ServerCapabilities(
             tools: true,
             toolsListChanged: false,
@@ -322,7 +335,7 @@ foreach ([
     $sessionDir = dirname(__DIR__).'/var/sessions/projects-'.$environment.'-'.hash('sha256', $portalUserId);
 
     archMcpRunAndEmit(
-        archMcpBuildProjectsServer($logger, $tools, $route['serverName'], $sessionDir),
+        archMcpBuildProjectsServer($logger, $tools, $route['serverName'], $sessionDir, ProvisioningSwitch::enabled($environment)),
         $logger
     );
 }
