@@ -53,21 +53,28 @@ $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', ProjectBindings::fetch
 check('registered: only my ID', ProjectBindings::REGISTERED === $d['state'] && [$one] === $d['claude_project_ids']);
 check('the note says to pass it and not to ask', str_contains($d['note'], 'claudeProjectId') && str_contains($d['note'], 'Do not ask the user'));
 check('the other person\'s ID is nowhere in the reply', !str_contains(json_encode($d), $two));
+check('one registered ID: the note says to tell the person if this chat\'s own ID is not in the list, and not to borrow another', str_contains($d['note'], 'tell the person before going on') && str_contains($d['note'], 'do not borrow another project') && str_contains($d['note'], 'Do not ask the user'));
+check('one registered ID: no ask-for-the-URL line (the ID is already known)', !str_contains($d['note'], 'paste'));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '8', ProjectBindings::fetchWith($pdo, 'shared'));
 check('the other person sees their own ID, not mine', [$two] === $d['claude_project_ids'] && !str_contains(json_encode($d), $one));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', ProjectBindings::fetchWith($pdo, 'twice'));
+check('two of my own: the borrow warning is not added (the note already says to pick this chat\'s own)', !str_contains($d['note'], 'borrow') && !str_contains($d['note'], 'paste'));
 check('two of my own: both listed in order, note says to pick this chat\'s own', [$one, $three] === $d['claude_project_ids'] && str_contains($d['note'], 'own Claude project'));
 
 echo "\ndescribe(): the other states\n";
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '9', ProjectBindings::fetchWith($pdo, 'shared'));
 check('registered by others only: no IDs, install_bootstrap named', ProjectBindings::REGISTERED_BY_OTHERS === $d['state'] && [] === $d['claude_project_ids'] && str_contains($d['note'], 'install_bootstrap'));
 check('and no other person\'s ID leaks', !str_contains(json_encode($d), $one) && !str_contains(json_encode($d), $two));
+check('registered by others only: asks for the project URL if the ID is unknown, and not to guess', str_contains($d['note'], 'ask the person to paste') && str_contains($d['note'], 'https://claude.ai/project/<guid>') && str_contains($d['note'], 'do not guess'));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', ProjectBindings::fetchWith($pdo, 'old-one'));
 check('grandfathered: calls work without an ID, install_bootstrap offered', ProjectBindings::GRANDFATHERED === $d['state'] && str_contains($d['note'], 'install_bootstrap'));
+check('grandfathered: asks for the project URL if the ID is unknown, and not to guess', str_contains($d['note'], 'ask the person to paste') && str_contains($d['note'], 'do not guess'));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', ProjectBindings::fetchWith($pdo, 'new-one'));
 check('not bootstrapped: run install_bootstrap first', ProjectBindings::NOT_BOOTSTRAPPED === $d['state'] && [] === $d['claude_project_ids']);
+check('not bootstrapped: asks for the project URL if the ID is unknown, and not to guess', str_contains($d['note'], 'install_bootstrap') && str_contains($d['note'], 'ask the person to paste') && str_contains($d['note'], 'do not guess'));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', null);
 check('registry unreadable: unavailable, never not_bootstrapped', ProjectBindings::UNAVAILABLE === $d['state'] && [] === $d['claude_project_ids']);
+check('unavailable: the new lines are not added', !str_contains($d['note'], 'paste') && !str_contains($d['note'], 'borrow'));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, 'abc', ProjectBindings::fetchWith($pdo, 'shared'));
 check('a user id that is not a number owns nothing', [] === $d['claude_project_ids'] && ProjectBindings::REGISTERED_BY_OTHERS === $d['state']);
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '0', ProjectBindings::fetchWith($pdo, 'shared'));

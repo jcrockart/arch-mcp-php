@@ -33,6 +33,12 @@ final class ProjectBindings
     public const UNAVAILABLE = 'unavailable';
     public const NOT_APPLICABLE = 'not_applicable';
 
+    /** Added to the notes for a project with no registration of the caller's (ARCH-76): a chat cannot see its own URL. */
+    private const ASK_FOR_URL = ' If you cannot tell this chat\'s Claude project ID, ask the person to paste the project\'s URL (https://claude.ai/project/<guid>); do not guess.';
+
+    /** Added to the note when the caller has one registered ID (ARCH-76): do not borrow another Claude project's ID. */
+    private const NOT_IN_LIST = ' If you know this chat\'s own Claude project ID and it is not in this list, tell the person before going on, and do not borrow another project\'s ID.';
+
     /**
      * @param 'staging'|'production' $environment the Portal database this address talks to
      *
@@ -99,7 +105,7 @@ final class ProjectBindings
         }
 
         if ([] !== $own) {
-            $note = 'Pass this value as claudeProjectId on every other arch-projects tool call for this project. Do not ask the user for it.';
+            $note = 'Pass this value as claudeProjectId on every other arch-projects tool call for this project. Do not ask the user for it.'.self::NOT_IN_LIST;
             if (\count($own) > 1) {
                 $note = 'You registered more than one Claude project for this project: pass the ID of this chat\'s own Claude project on every other arch-projects tool call, and ask the user only if you cannot tell which it is.';
             }
@@ -107,13 +113,13 @@ final class ProjectBindings
             return self::result($mode, self::REGISTERED, $own, $note);
         }
         if ([] !== $registry['rows']) {
-            return self::result($mode, self::REGISTERED_BY_OTHERS, [], 'Other people have registered Claude projects for this project, but none was registered by you. Run install_bootstrap from this Claude project (the slug and the GUID in its URL) to register it.');
+            return self::result($mode, self::REGISTERED_BY_OTHERS, [], 'Other people have registered Claude projects for this project, but none was registered by you. Run install_bootstrap from this Claude project (the slug and the GUID in its URL) to register it.'.self::ASK_FOR_URL);
         }
         if ($registry['grandfathered']) {
-            return self::result($mode, self::GRANDFATHERED, [], 'No Claude project is registered yet and this project predates the ID check, so calls work without claudeProjectId. Run install_bootstrap to register this Claude project.');
+            return self::result($mode, self::GRANDFATHERED, [], 'No Claude project is registered yet and this project predates the ID check, so calls work without claudeProjectId. Run install_bootstrap to register this Claude project.'.self::ASK_FOR_URL);
         }
 
-        return self::result($mode, self::NOT_BOOTSTRAPPED, [], 'No Claude project is registered for this project yet. Run install_bootstrap first (the slug and the GUID in this Claude project\'s URL).');
+        return self::result($mode, self::NOT_BOOTSTRAPPED, [], 'No Claude project is registered for this project yet. Run install_bootstrap first (the slug and the GUID in this Claude project\'s URL).'.self::ASK_FOR_URL);
     }
 
     /**
