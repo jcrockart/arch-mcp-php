@@ -25,6 +25,7 @@ require_once dirname(__DIR__).'/src/BreakglassAuth.php';
 require_once dirname(__DIR__).'/src/PortalProjectResolver.php';
 require_once dirname(__DIR__).'/src/ProjectsTools.php';
 require_once dirname(__DIR__).'/src/ProvisioningSwitch.php';
+require_once dirname(__DIR__).'/src/ServerInstructions.php';
 
 use ArchMcp\ArchProfiles;
 use ArchMcp\ArchTools;
@@ -32,6 +33,7 @@ use ArchMcp\BreakglassAuth;
 use ArchMcp\OAuthBearer;
 use ArchMcp\ProjectsTools;
 use ArchMcp\ProvisioningSwitch;
+use ArchMcp\ServerInstructions;
 use Laminas\HttpHandlerRunner\Emitter\SapiEmitter;
 use Mcp\Capability\Registry\Container;
 use Mcp\Schema\ServerCapabilities;
@@ -90,7 +92,7 @@ $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', \PHP_URL_PATH);
  * once, 2026-09-28, when the staging/production split added a third
  * near-identical route block, to stop this list drifting between them.
  */
-function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tools, string $serverName, string $sessionDir, bool $provisioningTools = false): Server
+function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tools, string $serverName, string $sessionDir, bool $provisioningTools = false, ?string $instructions = null): Server
 {
     $container = new Container();
     $container->set(LoggerInterface::class, $logger);
@@ -149,6 +151,14 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         $builder = $builder
             ->addTool([ProjectsTools::class, 'archProvisionRequest'], 'arch_provision_request')
             ->addTool([ProjectsTools::class, 'archProvisionStatus'], 'arch_provision_status');
+    }
+
+    // Generic ARCH guidance for the initialize response (ARCH-75), or null when
+    // the switch is off, which leaves the server exactly as it was. OAuth routes
+    // only: the break-glass address passes nothing. The SDK method is called only
+    // when there is text, so with the switch off this code path is unchanged.
+    if (null !== $instructions) {
+        $builder = $builder->setInstructions($instructions);
     }
 
     return $builder
@@ -335,7 +345,7 @@ foreach ([
     $sessionDir = dirname(__DIR__).'/var/sessions/projects-'.$environment.'-'.hash('sha256', $portalUserId);
 
     archMcpRunAndEmit(
-        archMcpBuildProjectsServer($logger, $tools, $route['serverName'], $sessionDir, ProvisioningSwitch::enabled($environment)),
+        archMcpBuildProjectsServer($logger, $tools, $route['serverName'], $sessionDir, ProvisioningSwitch::enabled($environment), ServerInstructions::forEnvironment($environment)),
         $logger
     );
 }
