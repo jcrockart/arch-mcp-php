@@ -28,6 +28,8 @@ require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
 require_once __DIR__.'/ProjectBindings.php';
 require_once __DIR__.'/BindingRegistry.php';
+require_once __DIR__.'/PortalLinks.php';
+require_once __DIR__.'/ProvisionRequest.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -667,6 +669,8 @@ final class ProjectsTools
         $caller = $this->bindingCaller();
         $registry = BindingGuard::CALLER_USER === $caller ? ProjectBindings::fetch($slug, $this->environment, $this->logger) : null;
         $info['binding'] = ProjectBindings::describe(BindingMode::load(), $caller, $this->portalUserId, $registry);
+        // Where Portal is for this connector, and this project's own Portal page (ARCH-74).
+        $info['portal'] = PortalLinks::describe($this->environment, $slug, OAuthBearer::trustedIssuerUrlsForEnvironment($this->environment));
 
         return $info;
     }
@@ -1230,7 +1234,7 @@ final class ProjectsTools
      *
      * @return PortalAssetsClient|array<string, mixed>
      */
-    private function bootstrapClient(string $tool): PortalAssetsClient|array
+    private function bootstrapClient(string $tool, string $endpoint = 'api_bootstrap.php'): PortalAssetsClient|array
     {
         if ($this->breakglass || $this->portalService) {
             return ['success' => false, 'error' => $tool.' can only run from an OAuth-authenticated /projects session, because Portal must know who you are. The break-glass address and Portal\'s own service credential cannot use it.'];
@@ -1240,6 +1244,100 @@ final class ProjectsTools
             return ['success' => false, 'error' => $tool.' needs an OAuth-authenticated /projects session; this request carries no access token.'];
         }
 
-        return new PortalAssetsClient($this->logger, $this->environment, $token, 'api_bootstrap.php');
+        return new PortalAssetsClient($this->logger, $this->environment, $token, $endpoint);
+    }
+
+    // -----------------------------------------------------------------
+    // Chat provisioning (ARCH-74): arch_provision_request and
+    // arch_provision_status call Portal's api_provision.php with the caller's own
+    // token. Portal does every check (who is calling, slots, eligibility, whose
+    // project it is); the replies come back unchanged. Both tools are exempt from
+    // the binding check (a project that does not exist yet has no Claude project
+    // registered) and do no membership lookup here, for the same reason: Portal
+    // decides. The break-glass address and Portal's own service credential have
+    // no person for Portal to check, so they are refused, and a request is never
+    // sent under any other credential. Only registered when ProvisioningSwitch
+    // says so for this connector (see public/index.php).
+    // -----------------------------------------------------------------
+
+    /**
+     * Ask Portal to create and set up a NEW project for the person you are
+     * working with. Use it only when the person has asked for a new project, and
+     * say what you are about to do first. Portal creates it as an
+     * auto-provisioned project owned by them, using one of their auto-provision
+     * slots (admins use none), and sets it up in the background; that takes a few
+     * minutes. The reply is Portal's own: success with status 'provisioning' (or
+     * already_requested if they asked for this same project before), or a refusal
+     * with a code. This uses the person's existing sign-in to this connector.
+     * Never ask them for a password, token or key.
+     * On any refusal, give the person Portal's message plainly and stop; do not
+     * retry and do not look for another route. Codes: no_slots (no auto-provisions
+     * left), not_eligible (reason switched_off, reserved or unavailable: tell the
+     * person what Portal said and let them decide), in_flight (one of their
+     * projects is already being set up), failed (provisioning stopped for this
+     * project and an admin has been told: do not request it again), invalid (the
+     * slug or notes were not accepted), unauthorized (their sign-in has expired:
+     * ask them to sign in to the connector again), error (Portal had a problem and
+     * started nothing). If the reply has code 'server' and may_have_started, the
+     * request MAY have started: do not call this tool again; call
+     * arch_provision_status with the same slug. Next, follow progress with
+     * arch_provision_status.
+     *
+     * @param string $slug            the new project's name: 3 to 100 characters, lowercase letters, digits and hyphens, starting and ending with a letter or digit; Portal trims and lowercases it, and refuses reserved names and anything starting 'arch-'
+     * @param string $notes           optional: a short description of the project (cut at 2000 characters). Portal stores it as the project's notes, uses it to make the project's icon, and it may be visible to the project's members and admins: put nothing private in it.
+     * @param string $claudeProjectId not needed: this tool is exempt from the ID check
+     */
+    public function archProvisionRequest(string $slug, string $notes = '', string $claudeProjectId = ''): array
+    {
+        $client = $this->bootstrapClient('arch_provision_request', 'api_provision.php');
+        if (\is_array($client)) {
+            return $client;
+        }
+
+        $result = ProvisionRequest::request($client, $slug, $notes);
+        // Never the token and never the notes.
+        $this->logger->warning('arch_provision_request', [
+            'slug' => mb_substr($slug, 0, 120),
+            'portal_user_id' => $this->portalUserId,
+            'success' => $result['success'] ?? false,
+            'code' => $result['code'] ?? null,
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * Follow a project requested with arch_provision_request. Read-only. Returns
+     * Portal's reply unchanged: status 'provisioning', 'provisioned' or
+     * 'provisioning_failed'; the nine setup steps with their states (done,
+     * failed, pending); steps_done of steps_total; failed_step; and how many
+     * auto-provisions the person has left. While the status is 'provisioning',
+     * check every 15 to 30 seconds; it takes a few minutes. When it is
+     * 'provisioned', the next step is install_bootstrap for this slug. When it is
+     * 'provisioning_failed', tell the person an admin has been told and stop; do
+     * not request the project again. Only the requester's own project can be read
+     * (an admin can read any); anything else is 'not_found'. This uses the
+     * person's existing sign-in to this connector. Never ask them for a password,
+     * token or key.
+     *
+     * @param string $slug            the project's name, as given to arch_provision_request
+     * @param string $claudeProjectId not needed: this tool is exempt from the ID check
+     */
+    public function archProvisionStatus(string $slug, string $claudeProjectId = ''): array
+    {
+        $client = $this->bootstrapClient('arch_provision_status', 'api_provision.php');
+        if (\is_array($client)) {
+            return $client;
+        }
+
+        $result = ProvisionRequest::status($client, $slug);
+        $this->logger->warning('arch_provision_status', [
+            'slug' => mb_substr($slug, 0, 120),
+            'portal_user_id' => $this->portalUserId,
+            'success' => $result['success'] ?? false,
+            'code' => $result['code'] ?? null,
+        ]);
+
+        return $result;
     }
 }

@@ -46,7 +46,10 @@
       {"name": "test-gate", "cmd": ["php", "tests/unit/test-gate.php"]},
       {"name": "test-session-engine", "cmd": ["php", "tests/unit/test-session-engine.php"]},
       {"name": "test-incoming-migrations", "cmd": ["php", "tests/unit/test-incoming-migrations.php"]},
-      {"name": "test-project-host-facts", "cmd": ["php", "tests/unit/test-project-host-facts.php"]}
+      {"name": "test-project-host-facts", "cmd": ["php", "tests/unit/test-project-host-facts.php"]},
+      {"name": "test-provision-request", "cmd": ["php", "tests/unit/test-provision-request.php"]},
+      {"name": "test-portal-links", "cmd": ["php", "tests/unit/test-portal-links.php"]},
+      {"name": "test-provisioning-switch", "cmd": ["php", "tests/unit/test-provisioning-switch.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock", "README.md"]}
   }
