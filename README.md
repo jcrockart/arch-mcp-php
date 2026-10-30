@@ -47,6 +47,13 @@ exactly `true`; with no file they are not offered. Code: `ProvisionRequest`,
 `ProvisioningSwitch`. `arch_project_info` also returns a `portal` block (the
 Portal address for this connector and the project's Portal page: `PortalLinks`).
 
+Server instructions (ARCH-75): an optional generic guidance string in the MCP
+`initialize` response (`ServerInstructions`), pointing chats at
+`arch_project_info` and the ARCH project constitution. Off unless the deploy-time
+file `server-instructions.json` (secrets directory, outside git, e.g.
+`{"staging": true, "production": false}`) sets the connector's environment to
+exactly `true`; off sends nothing, as before. OAuth connectors only.
+
 ## Tests
 
 `tests/unit/test-*.php` are the commit gate's test steps (see
