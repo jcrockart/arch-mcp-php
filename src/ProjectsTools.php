@@ -1313,7 +1313,8 @@ final class ProjectsTools
      * failed, pending); steps_done of steps_total; failed_step; and how many
      * auto-provisions the person has left. While the status is 'provisioning',
      * check every 15 to 30 seconds; it takes a few minutes. When it is
-     * 'provisioned', the next step is install_bootstrap for this slug. When it is
+     * 'provisioned', follow the `next` line in the reply: it recommends a Claude
+     * project named exactly the slug, then install_bootstrap. When it is
      * 'provisioning_failed', tell the person an admin has been told and stop; do
      * not request the project again. Only the requester's own project can be read
      * (an admin can read any); anything else is 'not_found'. This uses the
