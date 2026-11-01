@@ -39,7 +39,6 @@ final class ProvisionRequest
     private const SLUG_RULE = 'slug is required: 3 to 100 characters, lowercase letters, digits and hyphens, starting and ending with a letter or digit';
 
     private const NEXT_FOLLOW = 'Follow progress with arch_provision_status for this slug, no more often than every 15 to 30 seconds; it can take a few minutes. Do not request this project again.';
-    private const NEXT_DONE = 'Provisioning has finished. Next: install_bootstrap for this slug (see that tool), then arch_bootstrap_read.';
     private const NEXT_FAILED = 'Provisioning stopped and an admin has been told. Tell the person and stop. Do not request this project again.';
 
     /**
@@ -87,6 +86,24 @@ final class ProvisionRequest
         }
 
         return self::withNext($reply, false);
+    }
+
+    /**
+     * What to do once provisioning has finished: recommend a Claude project named
+     * exactly the slug (the Portal wizard's step 2), and send the person to Portal
+     * for the setup steps and the starter text. The starter text is Portal's, so the
+     * chat must not write it. The slug comes from Portal's own reply and is used
+     * only if it has the shape of a slug, so nothing else can ride into this line.
+     */
+    private static function nextDone(mixed $slug): string
+    {
+        $name = \is_string($slug) && 1 === preg_match('/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/', $slug) ? $slug : 'the project slug';
+
+        return 'Provisioning has finished. Recommend that the person creates a Claude project named exactly '.$name.' at claude.ai/projects, so their instructions and context stay with it between chats. '
+            .'Ask them to open the project page in Portal (portal.project_url in arch_project_info) and follow the setup there, which gives the starter text to paste into the Claude project instructions. '
+            .'Do not write the starter text yourself, and if the page does not show it, tell the person and stop. '
+            .'Then, from inside that Claude project, run install_bootstrap for this slug. '
+            .'They can keep working in this chat instead, but nothing will be saved for next time.';
     }
 
     private static function cleanSlug(string $slug): ?string
@@ -148,7 +165,7 @@ final class ProvisionRequest
         }
         $next = match ($reply['status'] ?? null) {
             'provisioning' => self::NEXT_FOLLOW,
-            'provisioned' => self::NEXT_DONE,
+            'provisioned' => self::nextDone($reply['slug'] ?? null),
             'provisioning_failed' => self::NEXT_FAILED,
             default => null,
         };
