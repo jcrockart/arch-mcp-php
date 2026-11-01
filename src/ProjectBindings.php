@@ -37,7 +37,7 @@ final class ProjectBindings
     private const ASK_FOR_URL = ' If you cannot tell this chat\'s Claude project ID, ask the person to paste the project\'s URL (https://claude.ai/project/<guid>); do not guess.';
 
     /** Added to the note when the caller has one registered ID (ARCH-76): do not borrow another Claude project's ID. */
-    private const NOT_IN_LIST = ' If you know this chat\'s own Claude project ID and it is not in this list, tell the person before going on, and do not borrow another project\'s ID. If the person wants this chat\'s Claude project registered as well, install_bootstrap does that.';
+    private const NOT_IN_LIST = ' If you know this chat\'s own Claude project ID and it is not in this list, tell the person before you change or register anything (reading, including the constitution, is fine meanwhile), and do not borrow another project\'s ID. If the person wants this chat\'s Claude project registered as well, install_bootstrap does that (pass this Claude project\'s name as claudeProjectName; Portal shows it as the label), so do not send the person to the Portal to register it.';
 
     /**
      * @param 'staging'|'production' $environment the Portal database this address talks to
@@ -107,7 +107,7 @@ final class ProjectBindings
         if ([] !== $own) {
             $note = 'Pass this value as claudeProjectId on every other arch-projects tool call for this project. Do not ask the user for it.'.self::NOT_IN_LIST;
             if (\count($own) > 1) {
-                $note = 'You registered more than one Claude project for this project: pass the ID of this chat\'s own Claude project on every other arch-projects tool call, and ask the user only if you cannot tell which it is.';
+                $note = 'You registered more than one Claude project for this project: pass the ID of this chat\'s own Claude project on every other arch-projects tool call, and ask the user only if you cannot tell which it is.'.self::NOT_IN_LIST;
             }
 
             return self::result($mode, self::REGISTERED, $own, $note);

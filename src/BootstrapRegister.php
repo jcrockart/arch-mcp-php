@@ -27,7 +27,7 @@ final class BootstrapRegister
 {
     private const NEXT = 'Next: call arch_bootstrap_read with this slug and no path to list the framework files. '
         .'Then read each listed file and save it into this Claude project\'s knowledge exactly as returned; '
-        .'read each saved copy back and check its sha256 against the one the tool returned. '
+        .'read each saved copy back and check it has the same first and last lines and the same section headings as the file you read (you cannot compute a sha256 in a chat, so do not say one was checked). '
         .'In any later session, call arch_project_info with this slug to get the claudeProjectId: that tool is exempt from the ID check, so it works without it, and its binding section gives the ID to pass as claudeProjectId on every other arch-projects tool call for this project. Never ask the user for the ID.';
 
     /**
