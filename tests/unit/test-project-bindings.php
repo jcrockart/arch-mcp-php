@@ -53,13 +53,13 @@ $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', ProjectBindings::fetch
 check('registered: only my ID', ProjectBindings::REGISTERED === $d['state'] && [$one] === $d['claude_project_ids']);
 check('the note says to pass it and not to ask', str_contains($d['note'], 'claudeProjectId') && str_contains($d['note'], 'Do not ask the user'));
 check('the other person\'s ID is nowhere in the reply', !str_contains(json_encode($d), $two));
-check('one registered ID: the note says to tell the person if this chat\'s own ID is not in the list, and not to borrow another', str_contains($d['note'], 'tell the person before going on') && str_contains($d['note'], 'do not borrow another project') && str_contains($d['note'], 'Do not ask the user'));
-check('one registered ID: the note says install_bootstrap registers this chat\'s Claude project if the person wants that', str_contains($d['note'], 'install_bootstrap does that') && str_contains($d['note'], 'If the person wants this chat'));
+check('one registered ID: the note says to tell the person if this chat\'s own ID is not in the list, and not to borrow another', str_contains($d['note'], 'tell the person before you change or register anything') && str_contains($d['note'], 'reading, including the constitution, is fine') && str_contains($d['note'], 'do not borrow another project') && str_contains($d['note'], 'Do not ask the user'));
+check('one registered ID: the note says install_bootstrap registers this chat\'s Claude project if the person wants that', str_contains($d['note'], 'install_bootstrap does that') && str_contains($d['note'], 'If the person wants this chat') && str_contains($d['note'], 'claudeProjectName') && str_contains($d['note'], 'do not send the person to the Portal'));
 check('one registered ID: no ask-for-the-URL line (the ID is already known)', !str_contains($d['note'], 'paste'));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '8', ProjectBindings::fetchWith($pdo, 'shared'));
 check('the other person sees their own ID, not mine', [$two] === $d['claude_project_ids'] && !str_contains(json_encode($d), $one));
 $d = ProjectBindings::describe(BindingMode::LOG, $U, '7', ProjectBindings::fetchWith($pdo, 'twice'));
-check('two of my own: the borrow warning is not added (the note already says to pick this chat\'s own)', !str_contains($d['note'], 'borrow') && !str_contains($d['note'], 'paste'));
+check('two of my own: the same read-first, do-not-borrow and install_bootstrap lines are added, with no Portal pointer to register', str_contains($d['note'], 'tell the person before you change or register anything') && str_contains($d['note'], 'do not borrow another project') && str_contains($d['note'], 'install_bootstrap does that') && str_contains($d['note'], 'claudeProjectName') && str_contains($d['note'], 'own Claude project') && !str_contains($d['note'], 'paste'));
 check('two of my own: both listed in order, note says to pick this chat\'s own', [$one, $three] === $d['claude_project_ids'] && str_contains($d['note'], 'own Claude project'));
 
 echo "\ndescribe(): the other states\n";

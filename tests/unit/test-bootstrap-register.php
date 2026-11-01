@@ -63,7 +63,8 @@ $r = BootstrapRegister::run($p, 'demo', strtoupper($ID), "  My Claude project\n"
 check('succeeds, ID folded to lower case, created', true === $r['success'] && 'demo' === $r['slug'] && $ID === $r['binding']['claude_project_id'] && true === $r['binding']['created'] && false === $r['binding']['rebound']);
 check('exactly one Portal call, register_binding, for the slug', 1 === \count($p->calls) && 'register_binding' === $p->calls[0][0] && 'demo' === $p->calls[0][1]);
 check('the label is cleaned', 'My Claude project' === $p->calls[0][2]['name_label'] && $ID === $p->calls[0][2]['claude_project_id']);
-check('the reply says what to do next, naming the tool and the hash check', str_contains($r['next'], 'arch_bootstrap_read') && str_contains($r['next'], 'sha256') && str_contains($r['next'], 'claudeProjectId'));
+check('the reply says what to do next, naming the tool and a read-back check a chat can do', str_contains($r['next'], 'arch_bootstrap_read') && str_contains($r['next'], 'same first and last lines') && str_contains($r['next'], 'same section headings') && str_contains($r['next'], 'claudeProjectId'));
+check('it does not ask for a sha256 check, which a chat cannot do, and says not to claim one', !str_contains($r['next'], 'check its sha256') && str_contains($r['next'], 'do not say one was checked'));
 check('the reply says where to get the ID later (arch_project_info, exempt) and not to ask the user', str_contains($r['next'], 'arch_project_info') && str_contains($r['next'], 'exempt') && str_contains($r['next'], 'Never ask the user'));
 check('the reply names no particular file, so the list is whatever arch-bootstrap holds', !str_contains($r['next'], 'BOOTSTRAP.md') && !str_contains($r['next'], 'CONSTITUTION'));
 check('the reply carries no file contents', !isset($r['content']) && !isset($r['files']));
