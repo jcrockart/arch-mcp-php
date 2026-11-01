@@ -33,13 +33,13 @@ namespace ArchMcp;
 final class ServerInstructions
 {
     /** Version tag and test marker: a chat that received the text can say it. */
-    public const GUIDANCE_ID = 'arch-g1';
+    public const GUIDANCE_ID = 'arch-g2';
 
     public const TEXT = <<<'TXT'
-ARCH connector guidance (id arch-g1).
+ARCH connector guidance (id arch-g2).
 Use this only when the person is working on an ARCH project, which they will name by its slug.
 1. First call arch_project_info with that slug. Its binding section gives the claudeProjectId: pass it on every other call, and never ask the person for it. If it says this Claude project is not registered, follow its note.
-2. Then call arch_bootstrap_read with the slug to list the framework files, read the ARCH project constitution it lists, and follow it for the rest of the chat. The constitution is the rule book. This text only points to it; if they ever differ, the constitution wins.
+2. Before you do or plan anything else, call arch_bootstrap_read with the slug to list the framework files, then read the ARCH project constitution it lists, in full. Follow it for the rest of the chat. The constitution is the rule book. This text only points to it; if they ever differ, the constitution wins.
 3. Never ask for, accept or repeat a password, token or key. Never guess a value, an address or a result: say you do not know and ask.
 4. If a tool refuses or fails, tell the person plainly and stop. Do not look for another route.
 TXT;
