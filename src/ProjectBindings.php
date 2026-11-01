@@ -37,7 +37,7 @@ final class ProjectBindings
     private const ASK_FOR_URL = ' If you cannot tell this chat\'s Claude project ID, ask the person to paste the project\'s URL (https://claude.ai/project/<guid>); do not guess.';
 
     /** Added to the note when the caller has one registered ID (ARCH-76): do not borrow another Claude project's ID. */
-    private const NOT_IN_LIST = ' If you know this chat\'s own Claude project ID and it is not in this list, tell the person before going on, and do not borrow another project\'s ID.';
+    private const NOT_IN_LIST = ' If you know this chat\'s own Claude project ID and it is not in this list, tell the person before going on, and do not borrow another project\'s ID. If the person wants this chat\'s Claude project registered as well, install_bootstrap does that.';
 
     /**
      * @param 'staging'|'production' $environment the Portal database this address talks to
