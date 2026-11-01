@@ -3,6 +3,7 @@
 namespace ArchMcp;
 
 require_once __DIR__.'/PortalCaller.php';
+require_once __DIR__.'/PortalLinks.php';
 
 /**
  * The two chat provisioning calls to Portal's api_provision.php (ARCH-74, Portal
@@ -44,7 +45,7 @@ final class ProvisionRequest
     /**
      * @return array<string, mixed>
      */
-    public static function request(PortalCaller $portal, string $slug, string $notes = ''): array
+    public static function request(PortalCaller $portal, string $slug, string $notes = '', array $issuers = []): array
     {
         $slug = self::cleanSlug($slug);
         if (null === $slug) {
@@ -63,13 +64,13 @@ final class ProvisionRequest
             ];
         }
 
-        return self::withNext($reply, $cut);
+        return self::withNext($reply, $cut, $issuers);
     }
 
     /**
      * @return array<string, mixed>
      */
-    public static function status(PortalCaller $portal, string $slug): array
+    public static function status(PortalCaller $portal, string $slug, array $issuers = []): array
     {
         $slug = self::cleanSlug($slug);
         if (null === $slug) {
@@ -85,7 +86,7 @@ final class ProvisionRequest
             ];
         }
 
-        return self::withNext($reply, false);
+        return self::withNext($reply, false, $issuers);
     }
 
     /**
@@ -95,15 +96,26 @@ final class ProvisionRequest
      * chat must not write it. The slug comes from Portal's own reply and is used
      * only if it has the shape of a slug, so nothing else can ride into this line.
      */
-    private static function nextDone(mixed $slug): string
+    private static function nextDone(mixed $slug, array $issuers): string
     {
-        $name = \is_string($slug) && 1 === preg_match('/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/', $slug) ? $slug : 'the project slug';
+        $valid = self::slugOrNull($slug);
+        $name = $valid ?? 'the project slug';
+        $url = null === $valid ? null : PortalLinks::projectUrl($issuers, $valid);
+        $where = null === $url
+            ? 'Ask them to open the project page in Portal (portal.project_url in arch_project_info) and follow the setup there, which gives the starter text to paste into the Claude project instructions. '
+            : 'Give them this link to the project page in Portal: '.$url.' and ask them to follow the setup there, which gives the starter text to paste into the Claude project instructions. ';
 
         return 'Provisioning has finished. Recommend that the person creates a Claude project named exactly '.$name.' at claude.ai/projects, so their instructions and context stay with it between chats. '
-            .'Ask them to open the project page in Portal (portal.project_url in arch_project_info) and follow the setup there, which gives the starter text to paste into the Claude project instructions. '
+            .$where
             .'Do not write the starter text yourself, and if the page does not show it, tell the person and stop. '
             .'Then, from inside that Claude project, run install_bootstrap for this slug. '
             .'They can keep working in this chat instead, but nothing will be saved for next time.';
+    }
+
+    /** The slug if it has the shape of one (from Portal's own reply), otherwise null. */
+    private static function slugOrNull(mixed $slug): ?string
+    {
+        return \is_string($slug) && 1 === preg_match('/^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$/', $slug) ? $slug : null;
     }
 
     private static function cleanSlug(string $slug): ?string
@@ -155,7 +167,7 @@ final class ProvisionRequest
      *
      * @return array<string, mixed>
      */
-    private static function withNext(array $reply, bool $notesCut): array
+    private static function withNext(array $reply, bool $notesCut, array $issuers): array
     {
         if (true !== ($reply['success'] ?? false)) {
             return $reply;
@@ -165,12 +177,21 @@ final class ProvisionRequest
         }
         $next = match ($reply['status'] ?? null) {
             'provisioning' => self::NEXT_FOLLOW,
-            'provisioned' => self::nextDone($reply['slug'] ?? null),
+            'provisioned' => self::nextDone($reply['slug'] ?? null, $issuers),
             'provisioning_failed' => self::NEXT_FAILED,
             default => null,
         };
         if (null !== $next && !isset($reply['next'])) {
             $reply['next'] = $next;
+        }
+        // Once provisioned, the project's own Portal page, so the chat can hand the
+        // person a link. Our own key; Portal's keys are never touched.
+        if ('provisioned' === ($reply['status'] ?? null) && !isset($reply['project_url'])) {
+            $valid = self::slugOrNull($reply['slug'] ?? null);
+            $url = null === $valid ? null : PortalLinks::projectUrl($issuers, $valid);
+            if (null !== $url) {
+                $reply['project_url'] = $url;
+            }
         }
 
         return $reply;

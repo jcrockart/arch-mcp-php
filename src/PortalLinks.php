@@ -43,7 +43,7 @@ final class PortalLinks
         return [
             'environment' => $environment,
             'base_url' => $base,
-            'project_url' => $base.'/project.php?slug='.rawurlencode($slug),
+            'project_url' => self::projectUrl($issuers, $slug),
         ];
     }
 
@@ -58,5 +58,18 @@ final class PortalLinks
         }
 
         return rtrim(trim($first), '/');
+    }
+
+    /**
+     * The project's own Portal page, from the first trusted issuer, or null when no
+     * https Portal address is configured.
+     *
+     * @param list<mixed> $issuers
+     */
+    public static function projectUrl(array $issuers, string $slug): ?string
+    {
+        $base = self::baseUrl($issuers);
+
+        return null === $base ? null : $base.'/project.php?slug='.rawurlencode($slug);
     }
 }

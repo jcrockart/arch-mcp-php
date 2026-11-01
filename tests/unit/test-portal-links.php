@@ -58,6 +58,7 @@ foreach ([
 
 echo "\nbaseUrl()\n";
 check('same rule on its own', 'https://portal.crockart.com.au' === PortalLinks::baseUrl(['https://portal.crockart.com.au/']) && null === PortalLinks::baseUrl(['http://x.example']) && null === PortalLinks::baseUrl([]));
+check('projectUrl(): the page address from the first issuer, null when none is usable', 'https://portal.crockart.com.au/project.php?slug=my-app' === PortalLinks::projectUrl(['https://portal.crockart.com.au/'], 'my-app') && null === PortalLinks::projectUrl(['http://x.example'], 'my-app') && null === PortalLinks::projectUrl([], 'my-app'));
 
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail > 0 ? 1 : 0);

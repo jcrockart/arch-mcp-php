@@ -1294,7 +1294,7 @@ final class ProjectsTools
             return $client;
         }
 
-        $result = ProvisionRequest::request($client, $slug, $notes);
+        $result = ProvisionRequest::request($client, $slug, $notes, OAuthBearer::trustedIssuerUrlsForEnvironment($this->environment));
         // Never the token and never the notes.
         $this->logger->warning('arch_provision_request', [
             'slug' => mb_substr($slug, 0, 120),
@@ -1331,7 +1331,7 @@ final class ProjectsTools
             return $client;
         }
 
-        $result = ProvisionRequest::status($client, $slug);
+        $result = ProvisionRequest::status($client, $slug, OAuthBearer::trustedIssuerUrlsForEnvironment($this->environment));
         $this->logger->warning('arch_provision_status', [
             'slug' => mb_substr($slug, 0, 120),
             'portal_user_id' => $this->portalUserId,
