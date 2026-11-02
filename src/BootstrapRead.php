@@ -3,6 +3,7 @@
 namespace ArchMcp;
 
 require_once __DIR__.'/PortalCaller.php';
+require_once __DIR__.'/ClaudeProjectId.php';
 
 /**
  * arch_bootstrap_read (ARCH-63, direction settled 2026-10-13): serve the
@@ -19,28 +20,38 @@ require_once __DIR__.'/PortalCaller.php';
  * Portal does the access check (owner or contributor of the project, which is
  * what lets a non-member of arch-bootstrap read it) and holds the only copy.
  *
+ * The caller's Claude project ID (ARCH-78), when it is a valid ID or a pasted
+ * project URL, goes to Portal as an optional claude_project_id on both calls. It
+ * is INFORMATIONAL only: a chat can claim any ID, so Portal may use it only to
+ * note a last read on a matching binding, never to decide access. The listing
+ * passes through `version` and `updated` when they are well formed; anything else
+ * Portal adds to a listing entry is dropped.
+ *
  * Does no I/O beyond the one Portal call.
  */
 final class BootstrapRead
 {
     private const MAX_NAME = 200;
+    private const MAX_VERSION = 64;
+    private const UPDATED = '/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?$/';
 
     /**
      * @return array<string, mixed>
      */
-    public static function run(PortalCaller $bootstrap, string $slug, string $path): array
+    public static function run(PortalCaller $bootstrap, string $slug, string $path, string $claudeProjectId = ''): array
     {
         $path = trim($path);
+        $extra = self::claimedId($claudeProjectId);
 
         if ('' === $path) {
-            $reply = $bootstrap->call('bootstrap_list', $slug);
+            $reply = $bootstrap->call('bootstrap_list', $slug, $extra);
             if (true !== ($reply['success'] ?? false)) {
                 return self::portalFail($reply, 'could not list the framework files');
             }
             $files = [];
             foreach ((array) ($reply['files'] ?? []) as $f) {
                 if (\is_array($f) && \is_string($f['name'] ?? null)) {
-                    $files[] = ['name' => $f['name'], 'size' => (int) ($f['size'] ?? 0), 'sha256' => (string) ($f['sha256'] ?? '')];
+                    $files[] = ['name' => $f['name'], 'size' => (int) ($f['size'] ?? 0), 'sha256' => (string) ($f['sha256'] ?? '')] + self::listingExtras($f);
                 }
             }
 
@@ -51,7 +62,7 @@ final class BootstrapRead
             return ['success' => false, 'code' => 'invalid', 'error' => 'path must be one file name exactly as listed by arch_bootstrap_read with no path.'];
         }
 
-        $reply = $bootstrap->call('bootstrap_read', $slug, ['name' => $path]);
+        $reply = $bootstrap->call('bootstrap_read', $slug, ['name' => $path] + $extra);
         if (true !== ($reply['success'] ?? false)) {
             return self::portalFail($reply, "could not read '{$path}'");
         }
@@ -75,5 +86,47 @@ final class BootstrapRead
     private static function portalFail(array $reply, string $what): array
     {
         return ['success' => false, 'code' => (string) ($reply['code'] ?? 'server'), 'error' => $what.': '.mb_substr((string) ($reply['error'] ?? 'unexpected reply from Portal'), 0, 300)];
+    }
+
+    /**
+     * The ID to send to Portal as a claim, or nothing when it is empty or not a
+     * valid ID. A pasted claude.ai project URL is reduced to its GUID.
+     *
+     * @return array<string, string>
+     */
+    private static function claimedId(string $claudeProjectId): array
+    {
+        $id = ClaudeProjectId::normalize($claudeProjectId);
+
+        return null === $id ? [] : ['claude_project_id' => $id];
+    }
+
+    /**
+     * `version` and `updated` from one listing entry, each only when well formed:
+     * a version is a string with control characters turned into spaces, trimmed and
+     * cut to 64 characters (dropped if nothing is left); updated is a plain ISO
+     * date or date-time. Nothing else from the entry is passed on.
+     *
+     * @param array<string, mixed> $entry
+     *
+     * @return array<string, string>
+     */
+    private static function listingExtras(array $entry): array
+    {
+        $out = [];
+        $version = $entry['version'] ?? null;
+        if (\is_string($version) && mb_check_encoding($version, 'UTF-8')) {
+            $clean = preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $version);
+            $v = \is_string($clean) ? mb_substr(trim($clean), 0, self::MAX_VERSION) : '';
+            if ('' !== $v) {
+                $out['version'] = $v;
+            }
+        }
+        $updated = $entry['updated'] ?? null;
+        if (\is_string($updated) && 1 === preg_match(self::UPDATED, trim($updated))) {
+            $out['updated'] = trim($updated);
+        }
+
+        return $out;
     }
 }

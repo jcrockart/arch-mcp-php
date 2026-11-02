@@ -1208,7 +1208,7 @@ final class ProjectsTools
      *
      * @param string $slug            project slug
      * @param string $path            a file name exactly as listed; empty to list the files
-     * @param string $claudeProjectId this Claude project's ID, once registered with install_bootstrap
+     * @param string $claudeProjectId this Claude project's ID, once registered with install_bootstrap (also sent to Portal, for information only)
      */
     public function archBootstrapRead(string $slug, string $path = '', string $claudeProjectId = ''): array
     {
@@ -1225,7 +1225,7 @@ final class ProjectsTools
             return ['success' => false, 'error' => $binding];
         }
 
-        return BootstrapRead::run($client, $slug, $path);
+        return BootstrapRead::run($client, $slug, $path, $claudeProjectId);
     }
 
     /**
