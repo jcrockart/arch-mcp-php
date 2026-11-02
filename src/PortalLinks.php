@@ -22,6 +22,8 @@ namespace ArchMcp;
  */
 final class PortalLinks
 {
+    private const MAX_LINK = 500;
+
     /**
      * @param 'staging'|'production' $environment
      * @param list<mixed>            $issuers     OAuthBearer::trustedIssuerUrlsForEnvironment($environment)
@@ -71,5 +73,39 @@ final class PortalLinks
         $base = self::baseUrl($issuers);
 
         return null === $base ? null : $base.'/project.php?slug='.rawurlencode($slug);
+    }
+
+    /**
+     * A link Portal supplied (for example in a provision status reply), returned
+     * only if it is safe to hand to a person: a string of at most 500 characters
+     * made only of characters allowed in a URL (so no spaces, quotes, backslashes or
+     * control characters), https, no user info, and the same host and port as the
+     * trusted Portal address. Anything else is null.
+     *
+     * @param list<mixed> $issuers
+     */
+    public static function sameHostUrl(array $issuers, mixed $url): ?string
+    {
+        $base = self::baseUrl($issuers);
+        if (null === $base || !\is_string($url)) {
+            return null;
+        }
+        $url = trim($url);
+        if ('' === $url || \strlen($url) > self::MAX_LINK || 1 !== preg_match('/^[A-Za-z0-9\-._~:\/?#\[\]@!$&()*+,;=%]+$/', $url)) {
+            return null;
+        }
+        $want = parse_url($base);
+        $got = parse_url($url);
+        if (!\is_array($want) || !\is_array($got) || !isset($want['host'], $got['host'])) {
+            return null;
+        }
+        if ('https' !== strtolower((string) ($got['scheme'] ?? '')) || isset($got['user']) || isset($got['pass'])) {
+            return null;
+        }
+        if (strtolower($got['host']) !== strtolower($want['host']) || ($got['port'] ?? 443) !== ($want['port'] ?? 443)) {
+            return null;
+        }
+
+        return $url;
     }
 }
