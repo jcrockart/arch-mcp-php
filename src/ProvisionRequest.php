@@ -96,14 +96,24 @@ final class ProvisionRequest
      * chat must not write it. The slug comes from Portal's own reply and is used
      * only if it has the shape of a slug, so nothing else can ride into this line.
      */
-    private static function nextDone(mixed $slug, array $issuers): string
+    private static function nextDone(array $reply, array $issuers): string
     {
-        $valid = self::slugOrNull($slug);
+        $valid = self::slugOrNull($reply['slug'] ?? null);
         $name = $valid ?? 'the project slug';
-        $url = null === $valid ? null : PortalLinks::projectUrl($issuers, $valid);
-        $where = null === $url
-            ? 'Ask them to open the project page in Portal (portal.project_url in arch_project_info) and follow the setup there, which gives the starter text to paste into the Claude project instructions. '
-            : 'Give them this link to the project page in Portal: '.$url.' and ask them to follow the setup there, which gives the starter text to paste into the Claude project instructions. ';
+        // Links Portal supplied are used here only if they pass
+        // PortalLinks::sameHostUrl; the project page falls back to the link built
+        // from the trusted issuer. Portal's own reply keys are not changed.
+        $setup = PortalLinks::sameHostUrl($issuers, $reply['setup_url'] ?? null);
+        $project = PortalLinks::sameHostUrl($issuers, $reply['project_url'] ?? null)
+            ?? (null === $valid ? null : PortalLinks::projectUrl($issuers, $valid));
+        $steps = 'which gives the starter text to paste into the Claude project instructions. ';
+        if (null !== $setup) {
+            $where = 'Give them this link, which goes straight to the Claude project step of the Portal setup: '.$setup.(null === $project ? '' : ' (the project page is '.$project.')').'. Ask them to follow it, '.$steps;
+        } elseif (null !== $project) {
+            $where = 'Give them this link to the project page in Portal: '.$project.' and ask them to follow the setup there, '.$steps;
+        } else {
+            $where = 'Ask them to open the project page in Portal (portal.project_url in arch_project_info) and follow the setup there, '.$steps;
+        }
 
         return 'Provisioning has finished. Recommend that the person creates a Claude project named exactly '.$name.' at claude.ai/projects, so their instructions and context stay with it between chats. '
             .$where
@@ -177,7 +187,7 @@ final class ProvisionRequest
         }
         $next = match ($reply['status'] ?? null) {
             'provisioning' => self::NEXT_FOLLOW,
-            'provisioned' => self::nextDone($reply['slug'] ?? null, $issuers),
+            'provisioned' => self::nextDone($reply, $issuers),
             'provisioning_failed' => self::NEXT_FAILED,
             default => null,
         };

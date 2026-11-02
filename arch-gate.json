@@ -51,7 +51,8 @@
       {"name": "test-portal-links", "cmd": ["php", "tests/unit/test-portal-links.php"]},
       {"name": "test-provisioning-switch", "cmd": ["php", "tests/unit/test-provisioning-switch.php"]},
       {"name": "test-server-instructions", "cmd": ["php", "tests/unit/test-server-instructions.php"]},
-      {"name": "test-bootstrap-read-extras", "cmd": ["php", "tests/unit/test-bootstrap-read-extras.php"]}
+      {"name": "test-bootstrap-read-extras", "cmd": ["php", "tests/unit/test-bootstrap-read-extras.php"]},
+      {"name": "test-provision-links", "cmd": ["php", "tests/unit/test-provision-links.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock", "README.md"]}
   }
