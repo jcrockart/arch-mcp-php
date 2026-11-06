@@ -142,7 +142,8 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
         ->addTool([ProjectsTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row')
         ->addTool([ProjectsTools::class, 'installBootstrap'], 'install_bootstrap')
-        ->addTool([ProjectsTools::class, 'archBootstrapRead'], 'arch_bootstrap_read');
+        ->addTool([ProjectsTools::class, 'archBootstrapRead'], 'arch_bootstrap_read')
+        ->addTool([ProjectsTools::class, 'archRef'], 'arch_ref');
 
     // The chat provisioning tools (ARCH-74) are registered only where
     // ProvisioningSwitch says so for this connector, because registering a tool
