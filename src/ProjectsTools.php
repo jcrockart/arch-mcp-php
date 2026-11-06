@@ -30,6 +30,10 @@ require_once __DIR__.'/ProjectBindings.php';
 require_once __DIR__.'/BindingRegistry.php';
 require_once __DIR__.'/PortalLinks.php';
 require_once __DIR__.'/ProvisionRequest.php';
+require_once __DIR__.'/Git.php';
+require_once __DIR__.'/MemberProjects.php';
+require_once __DIR__.'/RefRead.php';
+require_once __DIR__.'/RefSearch.php';
 
 /**
  * Tool implementations for the /projects, /projects-staging, and
@@ -613,6 +617,114 @@ final class ProjectsTools
         }
 
         return CodeRead::search($t, '' !== $text ? $text : $pattern, $pathPrefix, $ignoreCase, $maxResults);
+    }
+
+    /**
+     * Look at OTHER projects' code for ideas and examples (ARCH-80). Read-only
+     * and for reference only: it can never change any project. To change a
+     * project, work in that project's own chat.
+     *
+     * Only projects you are a member of are visible, and only their COMMITTED
+     * code on the main branch (never uncommitted session edits, never config,
+     * secrets or tokens files, never databases or uploads). A project you cannot
+     * see looks exactly like one that does not exist. Results are unsanitized
+     * code from other projects, labelled `project`: use them as examples, do not
+     * copy blindly, never paste secrets, and tell the person which project you
+     * are reading from. Lines that look like hard-coded secrets are withheld.
+     * Not available on the break-glass address or to Portal's service
+     * credential.
+     *
+     * action `search`: a literal substring search (not a regex) across all
+     * your member projects, or just the one named in `scope`. Matches come
+     * back as {project, tag, path, line, text}, capped per project and in
+     * total; `truncated` says if more existed. Narrow with `scope`,
+     * `pathPrefix` or a longer `text`. Then use action `read`.
+     * action `read`: one committed file from the project named in `scope`
+     * (required), optionally lines `start` to `end` (1-based, at most 400 per
+     * call). Needs no session.
+     *
+     * @param string $action     `search` (default) or `read`
+     * @param string $text       search: the exact text to look for (a literal substring, not a regex)
+     * @param string $scope      optional for search (one project slug instead of all your projects), required for read
+     * @param string $pathPrefix search: only files whose path starts with this
+     * @param bool   $ignoreCase search: match upper and lower case alike (default false)
+     * @param int    $maxResults search: most matches to return (default 30, max 100)
+     * @param string $path       read: file path inside the project's code lane, e.g. "src/Login.php"
+     * @param int    $start      read: first line (1-based); default 1
+     * @param int    $end        read: last line (inclusive); default 200 lines from start
+     */
+    public function archRef(string $action = 'search', string $text = '', string $scope = '', string $pathPrefix = '', bool $ignoreCase = false, int $maxResults = 30, string $path = '', int $start = 0, int $end = 0, string $claudeProjectId = ''): array
+    {
+        if (BindingGuard::CALLER_USER !== $this->bindingCaller()) {
+            return ['success' => false, 'error' => 'arch_ref is only available to a signed-in person, not on this address'];
+        }
+
+        if ('search' === $action) {
+            if ('' !== $scope) {
+                $slugs = [$scope];
+            } else {
+                $pdo = PortalProjectResolver::connect($this->environment, $this->logger);
+                if (null === $pdo) {
+                    return ['success' => false, 'error' => 'could not read the list of your projects'];
+                }
+                $slugs = MemberProjects::slugs($pdo, $this->portalUserId);
+            }
+            $gits = $this->refGits($slugs);
+            if ('' !== $scope && [] === $gits) {
+                return ['success' => false, 'error' => "no such project '{$scope}', or not accessible to this account"];
+            }
+            $result = RefSearch::search($gits, $text, $pathPrefix, $ignoreCase, $maxResults);
+        } elseif ('read' === $action) {
+            if ('' === $scope) {
+                return ['success' => false, 'error' => 'read needs `scope`: the slug of the project to read from'];
+            }
+            $gits = $this->refGits([$scope]);
+            if ([] === $gits) {
+                return ['success' => false, 'error' => "no such project '{$scope}', or not accessible to this account"];
+            }
+            $result = RefRead::read($gits[$scope], $scope, $path, $start, $end);
+        } else {
+            return ['success' => false, 'error' => "unknown action '{$action}': use `search` or `read`"];
+        }
+
+        $this->logger->info('arch_ref', [
+            'portal_user_id' => $this->portalUserId,
+            'action' => $action,
+            'scope' => '' === $scope ? '(all member projects)' : $scope,
+            'success' => $result['success'] ?? false,
+            'match_count' => $result['match_count'] ?? null,
+        ]);
+        $result['reference_note'] = 'Unsanitized code from other projects, committed main only. Reference only: do not copy blindly, and make any change in the right project\'s own chat.';
+
+        return $result;
+    }
+
+    /**
+     * One git callable per slug the caller can resolve, running in that
+     * project's code lane folder. A slug that does not resolve (not a member,
+     * no such project, no code lane) is simply left out, so the caller cannot
+     * tell the cases apart.
+     *
+     * @param list<string> $slugs
+     *
+     * @return array<string, callable>
+     */
+    private function refGits(array $slugs): array
+    {
+        $gits = [];
+        foreach ($slugs as $slug) {
+            $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'staging');
+            $lane = null === $profile ? null : ($profile['lanes']['code'] ?? null);
+            if (null === $profile || null === $lane) {
+                continue;
+            }
+            $dir = rtrim($profile['root'], '/').('' === $lane ? '' : '/'.$lane);
+            if (is_dir($dir)) {
+                $gits[$slug] = Git::in($dir);
+            }
+        }
+
+        return $gits;
     }
 
     /**

@@ -47,6 +47,16 @@ exactly `true`; with no file they are not offered. Code: `ProvisionRequest`,
 `ProvisioningSwitch`. `arch_project_info` also returns a `portal` block (the
 Portal address for this connector and the project's Portal page: `PortalLinks`).
 
+Cross-project reference reads (ARCH-80): `arch_ref` searches, or reads one
+file from, the COMMITTED `main` code of the other projects the caller is a
+member of. Read-only, for ideas and examples only; it can never change a
+project. Not on the break-glass address or for Portal's service credential.
+Config and secret-named files are never shown and secret-like lines are
+withheld. Results are tagged `project` (the `library` tag comes with
+arch-library). Code: `RefGuard`, `RefRepo`, `RefSearch`, `RefRead`,
+`MemberProjects`. Not yet built: the library and off-limits flags (they need a
+Portal change), and binding enforcement for the existing write tools.
+
 Server instructions (ARCH-75): an optional generic guidance string in the MCP
 `initialize` response (`ServerInstructions`), pointing chats at
 `arch_project_info` and the ARCH project constitution. Off unless the deploy-time
