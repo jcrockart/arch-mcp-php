@@ -13,7 +13,7 @@ require_once __DIR__.'/PortalProjectResolver.php';
  * Portal runs in the project's own web context and keeps in projects.host_facts.
  *
  * It is a separate field from `environment_notes` on purpose: environment_notes
- * is free text a person writes and is cut at 2000 bytes when read, whereas host
+ * is free text a person writes and is cut at 4000 bytes when read, whereas host
  * facts are machine-collected, replaced per environment on every refresh, and
  * must never be cut in the middle or merged into hand-written text.
  *

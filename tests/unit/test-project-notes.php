@@ -1,7 +1,7 @@
 <?php
 // Offline proof of the environment notes in arch_project_info (ProjectNotes):
 // the text passing through unchanged, the null and empty cases, the safety
-// limits (control characters, 2000-byte cut on a character boundary, invalid
+// limits (control characters, 4000-byte cut on a character boundary, invalid
 // UTF-8), the fail-soft read against an in-memory SQLite stand-in for Portal's
 // projects table (including a Portal that does not have the column yet), and
 // the wiring into ProjectInfo::describe(). No network, no git.
@@ -54,16 +54,20 @@ check('only control characters counts as not set', null === $r['text'] && false 
 echo "\nclean(): safety limits\n";
 check('CRLF and bare CR become LF', "a\nb\nc" === ProjectNotes::clean("a\r\nb\rc")['text']);
 check('control characters are removed', 'abcde' === ProjectNotes::clean("a\x00b\x07c\x1Bd\x7Fe")['text']);
-$r = ProjectNotes::clean(str_repeat('a', 2000));
-check('exactly 2000 bytes is not truncated', 2000 === \strlen($r['text']) && false === $r['truncated']);
-$r = ProjectNotes::clean(str_repeat('a', 2001));
-check('2001 bytes is cut to 2000 and says so', 2000 === \strlen($r['text']) && true === $r['truncated']);
-$r = ProjectNotes::clean(str_repeat('é', 1500));
-check('a 2-byte character text is cut on a character boundary', true === $r['truncated'] && mb_check_encoding($r['text'], 'UTF-8') && \strlen($r['text']) <= 2000 && 0 === \strlen($r['text']) % 2);
-$r = ProjectNotes::clean(str_repeat('€', 1000));
-check('a 3-byte character text is cut on a character boundary', true === $r['truncated'] && mb_check_encoding($r['text'], 'UTF-8') && \strlen($r['text']) <= 2000 && 0 === \strlen($r['text']) % 3);
-$r = ProjectNotes::clean(str_repeat('a', 1999).' '.str_repeat('b', 10));
-check('a cut that lands on a space does not leave it at the end', str_repeat('a', 1999) === $r['text'] && true === $r['truncated']);
+$r = ProjectNotes::clean(str_repeat('a', 4000));
+check('exactly 4000 bytes is not truncated', 4000 === \strlen($r['text']) && false === $r['truncated']);
+$r = ProjectNotes::clean(str_repeat('a', 4001));
+check('4001 bytes is cut to 4000 and says so', 4000 === \strlen($r['text']) && true === $r['truncated']);
+$r = ProjectNotes::clean(str_repeat('é', 3000));
+check('a 2-byte character text is cut on a character boundary', true === $r['truncated'] && mb_check_encoding($r['text'], 'UTF-8') && \strlen($r['text']) <= 4000 && 0 === \strlen($r['text']) % 2);
+$r = ProjectNotes::clean(str_repeat('€', 2000));
+check('a 3-byte character text is cut on a character boundary', true === $r['truncated'] && mb_check_encoding($r['text'], 'UTF-8') && \strlen($r['text']) <= 4000 && 0 === \strlen($r['text']) % 3);
+$r = ProjectNotes::clean(str_repeat('a', 3999).' '.str_repeat('b', 10));
+check('a cut that lands on a space does not leave it at the end', str_repeat('a', 3999) === $r['text'] && true === $r['truncated']);
+$archNode = substr(str_repeat('The arch-node library publishes live events through the shared hub. ', 20), 0, 1350);
+$combined = rtrim($default."\n\n".$archNode."\n\n".str_repeat('Extra project note. ', 30));
+$r = ProjectNotes::clean($combined);
+check('default text plus a 1350-byte arch-node paragraph (over 2000 bytes) comes back whole', \strlen($combined) > 2000 && $combined === $r['text'] && false === $r['truncated']);
 $r = ProjectNotes::clean("\xff\xfe broken");
 check('invalid UTF-8 is unavailable, not passed on', null === $r['text'] && true === $r['unavailable']);
 
@@ -84,7 +88,7 @@ check('NULL in Portal: no text, not flagged', null === $r['text'] && false === $
 $r = ProjectNotes::fetchWith($pdo, 'blank');
 check('blank in Portal: no text, not flagged', null === $r['text'] && false === $r['unavailable']);
 $r = ProjectNotes::fetchWith($pdo, 'huge');
-check('a very long value is cut and flagged', 2000 === \strlen($r['text']) && true === $r['truncated']);
+check('a very long value is cut and flagged', 4000 === \strlen($r['text']) && true === $r['truncated']);
 check('the limits apply to what was read', "ab\nc" === ProjectNotes::fetchWith($pdo, 'messy')['text']);
 $r = ProjectNotes::fetchWith($pdo, 'nobody');
 check('unknown slug: unavailable, not "not set"', null === $r['text'] && true === $r['unavailable']);
@@ -116,8 +120,8 @@ $r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean(n
 check('not set: the key is present and null', \array_key_exists('environment_notes', $r) && null === $r['environment_notes'] && !isset($r['environment_notes_unavailable']));
 $r = ProjectInfo::describe('demo', 'production', $p, null);
 check('notes not read at all: the key is present and null', \array_key_exists('environment_notes', $r) && null === $r['environment_notes']);
-$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean(str_repeat('a', 3000)));
-check('truncated text carries the truncated flag', true === $r['environment_notes_truncated'] && 2000 === \strlen($r['environment_notes']));
+$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean(str_repeat('a', 5000)));
+check('truncated text carries the truncated flag', true === $r['environment_notes_truncated'] && 4000 === \strlen($r['environment_notes']));
 $r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::fetchWith($old, 'x'));
 check('an unreadable value carries the unavailable flag and still answers', true === $r['environment_notes_unavailable'] && null === $r['environment_notes'] && true === $r['success']);
 check('the rest of the reply is unchanged: urls and lanes are still there', isset($r['urls']) && ['code', 'core'] === $r['staging']['lanes']);
