@@ -21,12 +21,12 @@ require_once __DIR__.'/PortalProjectResolver.php';
  * The text is whatever a person entered in Portal, so it is data, not
  * instruction. It is passed through unchanged apart from two safety limits:
  * control characters other than newline and tab are removed (and CRLF becomes
- * LF), and it is cut at 2000 bytes on a character boundary, with `truncated`
+ * LF), and it is cut at 4000 bytes on a character boundary, with `truncated`
  * set. Empty or whitespace-only text counts as not set.
  */
 final class ProjectNotes
 {
-    public const MAX_BYTES = 2000;
+    public const MAX_BYTES = 4000;
 
     /**
      * @param 'staging'|'production' $environment the Portal database this address talks to
