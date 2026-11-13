@@ -56,10 +56,11 @@ final class RefRepo
      *
      * @param callable(list<string>): array{exit_code: int, stdout: string, stderr: string} $git
      * @param list<string>                                                                  $stagePaths
+     * @param string                                                                        $slug       the project, so the never-copy paths apply to arch-library
      *
      * @return list<string>
      */
-    public static function files(callable $git, array $stagePaths): array
+    public static function files(callable $git, array $stagePaths, string $slug = ''): array
     {
         if ([] === $stagePaths) {
             return [];
@@ -70,13 +71,33 @@ final class RefRepo
         }
         $files = [];
         foreach (explode("\0", $r['stdout']) as $file) {
-            if ('' !== $file && RefGuard::readable($file, $stagePaths)) {
+            if ('' !== $file && RefGuard::readableIn($slug, $file, $stagePaths)) {
                 $files[] = $file;
             }
         }
         sort($files);
 
         return $files;
+    }
+
+    /**
+     * Every path committed on main under a folder, readable or not (no filtering), sorted.
+     * For checking that a manifest's listed files exist.
+     *
+     * @param callable(list<string>): array{exit_code: int, stdout: string, stderr: string} $git
+     *
+     * @return list<string>
+     */
+    public static function allNames(callable $git, string $folder): array
+    {
+        $r = $git(['ls-tree', '-r', '--name-only', '-z', RefGuard::REF, '--', $folder]);
+        if (0 !== $r['exit_code']) {
+            return [];
+        }
+        $names = array_values(array_filter(explode("\0", $r['stdout']), static fn (string $n): bool => '' !== $n));
+        sort($names);
+
+        return $names;
     }
 
     /**

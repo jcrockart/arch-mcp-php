@@ -26,6 +26,8 @@ require_once __DIR__.'/BootstrapRead.php';
 require_once __DIR__.'/ProjectNotes.php';
 require_once __DIR__.'/ProjectHostFacts.php';
 require_once __DIR__.'/LiveEvents.php';
+require_once __DIR__.'/PortalDeployed.php';
+require_once __DIR__.'/RefLibrary.php';
 require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
 require_once __DIR__.'/ProjectBindings.php';
@@ -678,6 +680,13 @@ final class ProjectsTools
      * Not available on the break-glass address or to Portal's service
      * credential.
      *
+     * action `list`: for scope `arch-library` (the default for this action):
+     * every library function in one call, as {slug, name, summary, status,
+     * version, requires, tags, sanitizedOn, files[{path, role}]}, plus
+     * `problems` (folders whose manifest is invalid, with the reasons) and
+     * `refs` (the src/refs guides with title and read-when line). A file that
+     * the tool will not show carries `not_copyable: true`. Use this instead of
+     * searching for the text `"slug":`.
      * action `search`: a literal substring search (not a regex) across all
      * your member projects, or just the one named in `scope`. Matches come
      * back as {project, tag, path, line, text}, capped per project and in
@@ -687,7 +696,18 @@ final class ProjectsTools
      * (required), optionally lines `start` to `end` (1-based, at most 400 per
      * call). Needs no session.
      *
-     * @param string $action     `search` (default) or `read`
+     * In arch-library the constitution's never-copy list is enforced by path:
+     * search and read refuse arch_node_publish.php, arch-gate.json,
+     * project.config.json, config files and secret-named files, db/migrations/,
+     * src/demos/ and the your_* stand-ins, as if they did not exist. A read
+     * there adds `copy_warnings` ({line, rule}) for lines that look like
+     * secrets, long keys, server paths, emails or absolute SQLite paths, and a
+     * `copy_note` on recording where the copy came from. The scan is advisory.
+     * Real names, user data and wording that points back to a project are not
+     * detected: check those yourself. This tool never copies; write the files in
+     * your own session.
+     *
+     * @param string $action     `list` (arch-library only), `search` (default) or `read`
      * @param string $text       search: the exact text to look for (a literal substring, not a regex)
      * @param string $scope      optional for search (one project slug instead of all your projects), required for read
      * @param string $pathPrefix search: only files whose path starts with this
@@ -703,7 +723,17 @@ final class ProjectsTools
             return ['success' => false, 'error' => 'arch_ref is only available to a signed-in person, not on this address'];
         }
 
-        if ('search' === $action) {
+        if ('list' === $action) {
+            if ('' !== $scope && RefGuard::LIBRARY !== $scope) {
+                return ['success' => false, 'error' => 'list is only for scope arch-library; use search or read for other projects'];
+            }
+            $gits = $this->refGits([RefGuard::LIBRARY]);
+            if ([] === $gits) {
+                return ['success' => false, 'error' => "no such project 'arch-library', or not accessible to this account"];
+            }
+            $result = RefLibrary::list($gits[RefGuard::LIBRARY]);
+            $scope = RefGuard::LIBRARY;
+        } elseif ('search' === $action) {
             if ('' !== $scope) {
                 $slugs = [$scope];
             } else {
@@ -728,7 +758,7 @@ final class ProjectsTools
             }
             $result = RefRead::read($gits[$scope], $scope, $path, $start, $end);
         } else {
-            return ['success' => false, 'error' => "unknown action '{$action}': use `search` or `read`"];
+            return ['success' => false, 'error' => "unknown action '{$action}': use `list`, `search` or `read`"];
         }
 
         $this->logger->info('arch_ref', [
@@ -809,12 +839,43 @@ final class ProjectsTools
      * `staging` plus profile_environment, git, deployed, live_events and session,
      * and `production_same_as_staging` names the keys left out; the environment
      * notes come as titled sections. Pass `verbose` true for the full views and
-     * the raw notes. Each environment view also has `deployed` (version, tag, head
-     * commit, when it was committed and when the checkout last moved, which on
-     * production is when it was pulled) and `live_events` (from Portal: whether
-     * the hub connection is up, whether the browser origin is registered, the
-     * separate `game` switch, and the last connection test; {"configured": false}
-     * when there is none). `db_rules` says once who may use which database tool.
+     * the raw notes.
+     *
+     * `live_events` (per environment, from Portal): {connected, events, game,
+     * origin_registered, state}. `connected` is Portal's record of the LAST
+     * connect, not a live check of the hub; `events` always equals `connected`
+     * (EVENTS has no switch); `game` is a separate switch the owner or an admin
+     * turns on, reported as stored even when not connected; state is
+     * "not_connected" with everything false when there is no row.
+     * `live_events_note` says it once.
+     *
+     * `deployed` (production only; staging is always null, so use staging
+     * `git.head`): {version, commit, promoted_at} as Portal recorded it, with
+     * promoted_at in UTC. A change in commit or promoted_at means a promote
+     * happened. Any field can be null and that is not an error: promoted_at null
+     * with a commit set means Portal saw the commit but not the promote itself.
+     *
+     * `lane_model` says in words whether the project is one-lane (the code lane
+     * also carries metadata/) or two-lane (a code lane for the app and a metadata
+     * lane for metadata/, one session each). `core` in `lanes` is the project's
+     * git checkout, used by the arch_core_git_* tools and arch_prod_state: it is
+     * for reading and git operations, not where files are written (use the code
+     * or metadata lane for that). `site` is a legacy lane nothing uses.
+     *
+     * Other fields: `same_checkout` is true when staging and production are the
+     * same directory. Read-only, no fetch: for how far production is behind origin
+     * use arch_prod_state. Server paths are never shown. `urls` has the staging
+     * and production site addresses from metadata/project.config.json. Each view
+     * has a `database` entry (engine and, for SQLite, the file inside the project
+     * folder; connection settings are never shown). `environment_notes` is the
+     * text Portal holds about the stack and limits. `db_rules` says once who may
+     * use which database tool. `binding` says how the Claude project ID check is
+     * set: `mode` log means a call without a registered ID is allowed but logged,
+     * `enforced` true means it is refused until registered; a project that
+     * pre-dates the check (`grandfathered`) works without an ID only until
+     * someone registers one; `state`, the `claude_project_ids` YOU registered, and
+     * a `note` saying what to do next. The check is a guard against mistakes (a
+     * chat acting on the wrong project), not a security boundary.
      *
      * @param string $slug            project slug
      * @param bool   $verbose         full production view and raw environment notes (default false)
@@ -834,7 +895,8 @@ final class ProjectsTools
 
         $hostFacts = ProjectHostFacts::fetch($slug, $this->environment, $this->logger);
         $liveEvents = LiveEvents::fetch($slug, $this->environment, $this->logger);
-        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes, $hostFacts, $liveEvents, $verbose);
+        $deployed = PortalDeployed::fetch($slug, $this->environment, $this->logger);
+        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes, $hostFacts, $liveEvents, $verbose, $deployed);
         $caller = $this->bindingCaller();
         $registry = BindingGuard::CALLER_USER === $caller ? ProjectBindings::fetch($slug, $this->environment, $this->logger) : null;
         $info['binding'] = ProjectBindings::describe(BindingMode::load(), $caller, $this->portalUserId, $registry);

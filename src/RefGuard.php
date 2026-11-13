@@ -22,6 +22,10 @@ final class RefGuard
     public const MAX_LINE_CHARS = 300;
     public const WITHHELD = '[line withheld: looks like a secret]';
 
+    /** The one project whose files are meant to be copied (ARCH-94). */
+    public const LIBRARY = 'arch-library';
+    public const MAX_FLAGS = 20;
+
     private const EXTENSIONS = ['php', 'js', 'css', 'html', 'md', 'txt', 'json', 'yml', 'yaml', 'xml', 'svg', 'sql', 'py', 'sh'];
     private const SKIP_DIRS = ['vendor', 'node_modules'];
 
@@ -62,6 +66,77 @@ final class RefGuard
         }
 
         return 1 === preg_match('/(secret|password|passwd|credential|private[_-]?key|tokens?\.json|profiles?\.json|portal-db|\.env)/', $name);
+    }
+
+    /**
+     * The path part of the constitution's "never copy" list (Reusing code, rule 5), for
+     * files in arch-library. isExcluded() already covers config.php, .htaccess and
+     * secret-named files for every project; this adds the rest that a path can decide:
+     * arch_node_publish.php, arch-gate.json, project.config.json, another project's
+     * db/migrations/, anything under src/demos/ and the your_* stand-ins. What a path
+     * cannot decide (real names, user data, wording that points back to a project) stays
+     * a human check, and the content scan below only warns.
+     */
+    public static function neverCopy(string $path): bool
+    {
+        $parts = explode('/', strtolower($path));
+        $name = (string) array_pop($parts);
+        if (\in_array($name, ['arch_node_publish.php', 'arch-gate.json', 'project.config.json'], true) || str_starts_with($name, 'your_')) {
+            return true;
+        }
+        $dirs = '/'.implode('/', $parts).'/';
+        foreach ($parts as $dir) {
+            if (str_starts_with($dir, 'your_')) {
+                return true;
+            }
+        }
+
+        return str_contains($dirs, '/src/demos/') || str_contains($dirs, '/db/migrations/') || str_starts_with($dirs, '/demos/');
+    }
+
+    /**
+     * Whether a file of the named project may be shown: the usual rules, plus the
+     * never-copy paths when the project is arch-library.
+     *
+     * @param list<string> $stagePaths
+     */
+    public static function readableIn(string $slug, string $path, array $stagePaths): bool
+    {
+        return self::readable($path, $stagePaths) && (self::LIBRARY !== $slug || !self::neverCopy($path));
+    }
+
+    /**
+     * The content scan from the library's sanitizing rules, as warnings: private key blocks,
+     * a quoted password/secret/token/api_key value of 4+ characters, a 32+ character key-like
+     * string, /home/<user>/ paths, email addresses and absolute sqlite paths. One flag is one
+     * line matching one rule. Advisory: a safety net, not proof that a file is clean.
+     *
+     * @return list<array{line: int, rule: string}>
+     */
+    public static function copyFlags(string $content): array
+    {
+        $rules = [
+            'private key block' => '/-----BEGIN [A-Z ]*PRIVATE KEY-----/',
+            'secret-looking assignment' => '/(pass(word|wd)?|secret|token|api[_-]?key)s?[\"\']?\s*(=>|=|:)\s*[\"\'][^\"\']{4,}[\"\']/i',
+            'long key-like string' => '/[A-Za-z0-9+\/_-]{32,}/',
+            'server path' => '#/home/[A-Za-z0-9._-]+/#',
+            'email address' => '/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/',
+            'absolute sqlite path' => '#sqlite:/[^\s\'\"]+#',
+        ];
+        $flags = [];
+        foreach (explode("\n", $content) as $i => $line) {
+            foreach ($rules as $name => $re) {
+                if (1 === preg_match($re, $line)) {
+                    $flags[] = ['line' => $i + 1, 'rule' => $name];
+                    if (\count($flags) >= self::MAX_FLAGS) {
+                        return $flags;
+                    }
+                    break;
+                }
+            }
+        }
+
+        return $flags;
     }
 
     /**

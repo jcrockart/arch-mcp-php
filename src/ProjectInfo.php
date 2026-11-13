@@ -5,8 +5,9 @@ namespace ArchMcp;
 require_once __DIR__.'/ProjectUrls.php';
 require_once __DIR__.'/ProjectDatabase.php';
 require_once __DIR__.'/ProjectMail.php';
-require_once __DIR__.'/DeployedVersion.php';
 require_once __DIR__.'/LiveEvents.php';
+require_once __DIR__.'/PortalDeployed.php';
+require_once __DIR__.'/SessionLaneGuard.php';
 
 /**
  * One-call project summary, added 2026-10-06 (arch_project_info): what a
@@ -44,10 +45,11 @@ final class ProjectInfo
      * @param array{environments: ?array<string, array<string, mixed>>, unavailable: bool}|null $hostFacts the project's host facts (ProjectHostFacts), or null if not read
      * @param array{environments: ?array<string, array<string, mixed>>, unavailable: bool}|null $liveEvents the project's live-events state (LiveEvents), or null if not read
      * @param bool $verbose return the full production view and the raw environment notes
+     * @param array{production: ?array{version: ?string, commit: ?string, promoted_at: ?string}, unavailable: bool}|null $deployed Portal's recorded production deploy (PortalDeployed), or null if not read
      *
      * @return array<string, mixed>
      */
-    public static function describe(string $slug, string $portalEnvironment, array $staging, ?array $production, ?array $notes = null, ?array $hostFacts = null, ?array $liveEvents = null, bool $verbose = false): array
+    public static function describe(string $slug, string $portalEnvironment, array $staging, ?array $production, ?array $notes = null, ?array $hostFacts = null, ?array $liveEvents = null, bool $verbose = false, ?array $deployed = null): array
     {
         $out = [
             'success' => true,
@@ -65,6 +67,13 @@ final class ProjectInfo
             }
             $env = $out[$k]['profile_environment'] ?? $k;
             $out[$k]['live_events'] = $liveEvents['environments'][$env] ?? null;
+            // Portal records a deploy for the production profile only; staging is always null (use git.head).
+            $out[$k]['deployed'] = 'production' === $env ? ($deployed['production'] ?? null) : null;
+        }
+        $out['live_events_note'] = LiveEvents::NOTE;
+        $out['lane_model'] = self::laneModel((string) ($staging['root'] ?? ''));
+        if (true === ($deployed['unavailable'] ?? false)) {
+            $out['deployed_unavailable'] = true;
         }
         if (true === ($liveEvents['unavailable'] ?? false)) {
             $out['live_events_unavailable'] = true;
@@ -93,6 +102,22 @@ final class ProjectInfo
         }
 
         return $out;
+    }
+
+    /**
+     * The lane model in words, from arch-gate.json: one lane when the code lane's
+     * stage paths include metadata/, else two lanes. Null when there is no readable
+     * arch-gate.json stage list.
+     */
+    public static function laneModel(string $root): ?string
+    {
+        if (null === self::stagePaths($root)) {
+            return null;
+        }
+
+        return SessionLaneGuard::stagesMetadata($root, 'code')
+            ? 'one-lane (code lane carries metadata)'
+            : 'two-lane (code lane for the app, metadata lane for metadata/; one session each)';
     }
 
     /**
@@ -183,7 +208,6 @@ final class ProjectInfo
         $view['database'] = ProjectDatabase::forCheckout($dir);
         $view['mail'] = ProjectMail::forCheckout($dir);
         $view['git'] = self::gitState($dir);
-        $view['deployed'] = DeployedVersion::forCheckout($dir);
         $view['session'] = self::session((string) ($p['root'] ?? ''));
 
         return $view;
