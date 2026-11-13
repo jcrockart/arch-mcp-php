@@ -250,6 +250,13 @@ final class ArchTools
      */
     public function archSessionCommit(string $bump = 'patch'): array
     {
+        // ARCH-86: a file changed in the last second or two means the edit and this commit were
+        // probably sent together, and together they can run in either order. Say so once.
+        $recent = SessionCommit::recentWrite($this->repoPath, Git::in($this->repoPath), time());
+        if (null !== $recent) {
+            return SessionResult::fail("COMMIT NOT RUN: {$recent['path']} changed {$recent['age']}s ago. Calls sent in the same turn can run in any order, so check that your last edit landed (arch_core_git_diff) and call arch_session_commit again in a separate turn. Nothing has changed; the session is still open.");
+        }
+
         $result = SessionCommit::run($this->repoPath, $bump, Git::in($this->repoPath));
 
         // A passing commit prints every test line; keep only what matters
@@ -1367,7 +1374,7 @@ final class ArchTools
         if ($this->looksLikeFlag($path)) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'path must not look like a flag'];
         }
-        $args = ['log', '--oneline', '-'.max(1, $count)];
+        $args = ['log', '--oneline', '-'.min(200, max(1, $count))];
         if ('' !== $path) {
             $args[] = '--';
             $args[] = $path;

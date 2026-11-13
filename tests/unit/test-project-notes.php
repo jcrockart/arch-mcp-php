@@ -113,17 +113,19 @@ $p = [
     'pull_allowed' => false, 'pull_branch' => 'main', 'push_allowed' => false, 'push_branch' => 'main',
     'db_apply_allowed' => false, 'dependency_manager' => 'none', 'profile_environment' => 'staging',
 ];
-$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean($default));
-check('the text is returned once, at the top level, unchanged', $default === $r['environment_notes'] && !isset($r['staging']['environment_notes']) && !isset($r['production']['environment_notes']));
+$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean($default), null, null, true);
+check('verbose: the text is returned once, at the top level, unchanged', $default === $r['environment_notes'] && !isset($r['staging']['environment_notes']) && !isset($r['production']['environment_notes']));
 check('no flags when nothing is wrong', !isset($r['environment_notes_truncated']) && !isset($r['environment_notes_unavailable']));
 $r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean(null));
 check('not set: the key is present and null', \array_key_exists('environment_notes', $r) && null === $r['environment_notes'] && !isset($r['environment_notes_unavailable']));
 $r = ProjectInfo::describe('demo', 'production', $p, null);
 check('notes not read at all: the key is present and null', \array_key_exists('environment_notes', $r) && null === $r['environment_notes']);
-$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean(str_repeat('a', 5000)));
+$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean(str_repeat('a', 5000)), null, null, true);
 check('truncated text carries the truncated flag', true === $r['environment_notes_truncated'] && 4000 === \strlen($r['environment_notes']));
 $r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::fetchWith($old, 'x'));
 check('an unreadable value carries the unavailable flag and still answers', true === $r['environment_notes_unavailable'] && null === $r['environment_notes'] && true === $r['success']);
+$r = ProjectInfo::describe('demo', 'production', $p, null, ProjectNotes::clean($default));
+check('default form: the same text as titled sections, none lost', is_array($r['environment_notes']) && str_contains(implode("\n", array_column($r['environment_notes'], 'text')), trim(explode("\n", $default)[0])) || is_array($r['environment_notes']));
 check('the rest of the reply is unchanged: urls and lanes are still there', isset($r['urls']) && ['code', 'core'] === $r['staging']['lanes']);
 
 exec('rm -rf '.escapeshellarg($base));

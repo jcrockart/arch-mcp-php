@@ -56,7 +56,9 @@
       {"name": "test-ref-guard", "cmd": ["php", "tests/unit/test-ref-guard.php"]},
       {"name": "test-ref-repo", "cmd": ["php", "tests/unit/test-ref-repo.php"]},
       {"name": "test-member-projects", "cmd": ["php", "tests/unit/test-member-projects.php"]},
-      {"name": "test-assets-folder", "cmd": ["php", "tests/unit/test-assets-folder.php"]}
+      {"name": "test-assets-folder", "cmd": ["php", "tests/unit/test-assets-folder.php"]},
+      {"name": "test-class-file-check", "cmd": ["php", "tests/unit/test-class-file-check.php"]},
+      {"name": "test-recent-write", "cmd": ["php", "tests/unit/test-recent-write.php"]}
     ],
     "stage": {"label": "code", "paths": ["src", "public", "tests", "arch-gate.json", "composer.json", "composer.lock", "README.md"]}
   }

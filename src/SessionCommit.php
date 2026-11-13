@@ -2,7 +2,9 @@
 
 namespace ArchMcp;
 
+require_once __DIR__.'/ClassFileCheck.php';
 require_once __DIR__.'/Git.php';
+require_once __DIR__.'/SessionDiscard.php';
 require_once __DIR__.'/GateConfig.php';
 require_once __DIR__.'/GateRunner.php';
 require_once __DIR__.'/SessionFile.php';
@@ -66,7 +68,15 @@ final class SessionCommit
             }
         }
 
-        $gate = GateRunner::run($repoPath, $config['gate'], $branch, $lane);
+        // A project that loads its src/ classes from src/bootstrap.php gets one more step: every
+        // class file must be required from it (ARCH-85). Added here, not in arch-gate.json, so it
+        // covers every project without anyone editing their gate file.
+        $steps = $config['gate'];
+        if (ClassFileCheck::applies($repoPath) && self::touchesSrc($config['stage']['paths'])) {
+            $steps[] = ['name' => ClassFileCheck::STEP, 'builtin' => ClassFileCheck::STEP];
+        }
+
+        $gate = GateRunner::run($repoPath, $steps, $branch, $lane);
         if (!$gate['ok']) {
             return SessionResult::fail('', $gate['output']);
         }
@@ -130,5 +140,74 @@ final class SessionCommit
         $result['stdout'] = $out."\nCOMMITTED".$tail.$note;
 
         return $result;
+    }
+
+    /**
+     * The most recently changed file in the session's stage paths, if it changed
+     * within $window second(s) before $now (ARCH-86: an edit and a commit sent in
+     * the same turn). Calls sent together can run in any order, so a commit that
+     * finds a file changed a moment ago cannot tell whether the caller has seen
+     * that edit land. The arch_session_commit tool refuses once in that case; a
+     * second call a few seconds later goes through.
+     *
+     * Only files git already reports as changed are looked at, so the checkout
+     * of a branch (which touches files that differ) does not count.
+     *
+     * @param callable(list<string>): array{exit_code: int, stdout: string, stderr: string} $git
+     *
+     * @return array{path: string, age: int}|null
+     */
+    public static function recentWrite(string $repoPath, callable $git, int $now, int $window = 1): ?array
+    {
+        try {
+            $session = SessionFile::read($repoPath);
+        } catch (\RuntimeException) {
+            return null;
+        }
+        if (null === $session) {
+            return null;
+        }
+        $paths = SessionDiscard::stagePaths($repoPath, $session['lane']);
+        if ([] === $paths) {
+            return null;
+        }
+        $status = $git(array_merge(['status', '--porcelain', '-uall', '--'], $paths));
+        if (0 !== $status['exit_code']) {
+            return null;
+        }
+        $newest = null;
+        foreach (explode("\n", $status['stdout']) as $line) {
+            if (\strlen($line) < 4) {
+                continue;
+            }
+            $path = trim(substr($line, 3), '"');
+            if (str_contains($path, ' -> ')) {
+                $path = substr($path, (int) strrpos($path, ' -> ') + 4);
+            }
+            $mtime = @filemtime($repoPath.'/'.$path);
+            if (false !== $mtime && (null === $newest || $mtime > $newest['mtime'])) {
+                $newest = ['path' => $path, 'mtime' => $mtime];
+            }
+        }
+        if (null === $newest || $now - $newest['mtime'] > $window) {
+            return null;
+        }
+
+        return ['path' => $newest['path'], 'age' => max(0, $now - $newest['mtime'])];
+    }
+
+    /**
+     * @param list<string> $paths the lane's stage paths
+     */
+    private static function touchesSrc(array $paths): bool
+    {
+        foreach ($paths as $p) {
+            $p = trim(str_replace('\\', '/', $p), '/');
+            if ('src' === $p || str_starts_with($p, 'src/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
