@@ -64,7 +64,7 @@ final class RefSearch
             $searched[] = $slug;
             $scanned = 0;
             $found = 0;
-            foreach (RefRepo::files($git, $stage) as $file) {
+            foreach (RefRepo::files($git, $stage, $slug) as $file) {
                 if ('' !== $pathPrefix && !str_starts_with($file, $pathPrefix)) {
                     continue;
                 }

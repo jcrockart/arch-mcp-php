@@ -7,28 +7,29 @@ require_once __DIR__.'/PortalProjectResolver.php';
 /**
  * Live-events state per environment for arch_project_info (ARCH-82).
  *
- * Reads Portal's own record, the project_node_clients table (one row per
- * environment: hub app id, registered browser origin, connection state, last
- * test, and since migration 0043 the `game` flag). SELECT only, fail soft in
- * the same way as ProjectHostFacts: a Portal database without the table or
- * column, a missing grant or a failed read gives no data and `unavailable`,
- * and arch_project_info still answers.
+ * Reads Portal's project_node_clients table (one row per project and
+ * environment), SELECT only, fail soft like ProjectHostFacts: a Portal database
+ * without the columns, a missing grant or a failed read gives no data and
+ * `unavailable`, and arch_project_info still answers.
  *
- * What is reported for each environment (production, staging):
- *   events_enabled     the hub connection exists and Portal marks it connected
- *   hub_connected      same fact under the name the retrospective used
- *   state              Portal's state word (pending, connected, disconnected, problem)
- *   game               whether game tokens are allowed (null if Portal has no game column yet)
- *   origin_registered  a browser origin is written to the hub entry
- *   origin             that origin, e.g. https://staging.example.com
- *   last_test          {at, ok} of Portal's last connection test, or null
- * Game is a separate switch from events: a project can have events on and game off.
- * An environment with no row is reported as {"configured": false}. The app id,
- * publisher fingerprint and any key are never passed on.
+ * Per environment (staging, production) the answer is
+ *   {connected, events, game, origin_registered, state}
+ *   connected          Portal's record of the LAST CONNECT (active and the last connect ended in
+ *                      created, updated or unchanged). It is not a live check of the hub.
+ *   events             always equal to `connected`: EVENTS has no switch of its own.
+ *   game               the separate GAME switch the project owner or an admin turns on, reported as
+ *                      stored, even when not connected.
+ *   origin_registered  connected, and a browser origin was written to the hub entry.
+ *   state              Portal's word for the last connect (created, updated, unchanged, or an error word).
+ * With no row: state "not_connected" and everything false.
+ * The hub app id, origin, publisher fingerprint and any key are never passed on.
  */
 final class LiveEvents
 {
     public const ENVIRONMENTS = ['staging', 'production'];
+
+    /** Given once at the top level of arch_project_info, beside `live_events`. */
+    public const NOTE = "EVENTS and GAME are two separate switches. EVENTS (small stored notifications) is on for every connected app. GAME (real-time play, never stored) is off until the project owner or an admin switches it on, per environment. 'events is on' does not mean GAME is on.";
 
     /**
      * @param 'staging'|'production' $environment the Portal database this address talks to
@@ -54,12 +55,15 @@ final class LiveEvents
      */
     public static function fetchWith(\PDO $pdo, string $slug): array
     {
-        $rows = self::query($pdo, $slug, true) ?? self::query($pdo, $slug, false);
-        if (null === $rows) {
+        try {
+            $stmt = $pdo->prepare('SELECT c.environment, c.connected, c.events_on, c.game, c.origin_registered, c.state FROM project_node_clients c JOIN projects p ON p.id = c.project_id WHERE p.slug = :slug');
+            $stmt->execute(['slug' => $slug]);
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        } catch (\PDOException) {
             return self::unavailable();
         }
 
-        return self::describe($rows);
+        return self::describe(\is_array($rows) ? $rows : []);
     }
 
     /**
@@ -71,49 +75,24 @@ final class LiveEvents
     {
         $out = [];
         foreach (self::ENVIRONMENTS as $env) {
-            $out[$env] = ['configured' => false];
+            $out[$env] = ['connected' => false, 'events' => false, 'game' => false, 'origin_registered' => false, 'state' => 'not_connected'];
         }
         foreach ($rows as $row) {
             $env = (string) ($row['environment'] ?? '');
             if (!\in_array($env, self::ENVIRONMENTS, true)) {
                 continue;
             }
-            $state = (string) ($row['state'] ?? '');
-            $origin = \is_string($row['origin'] ?? null) ? trim($row['origin']) : '';
-            $connected = 'connected' === $state;
-            $testAt = $row['last_test_at'] ?? null;
+            $connected = (bool) ($row['connected'] ?? false);
             $out[$env] = [
-                'configured' => true,
-                'events_enabled' => $connected,
-                'hub_connected' => $connected,
-                'state' => $state,
-                'game' => \array_key_exists('game', $row) && null !== $row['game'] ? (bool) $row['game'] : null,
-                'origin_registered' => '' !== $origin,
-                'origin' => '' === $origin ? null : $origin,
-                'last_test' => \is_string($testAt) && '' !== $testAt
-                    ? ['at' => $testAt, 'ok' => null === ($row['last_test_ok'] ?? null) ? null : (bool) $row['last_test_ok']]
-                    : null,
+                'connected' => $connected,
+                'events' => $connected,
+                'game' => (bool) ($row['game'] ?? false),
+                'origin_registered' => (bool) ($row['origin_registered'] ?? false),
+                'state' => \is_string($row['state'] ?? null) && '' !== $row['state'] ? $row['state'] : 'unknown',
             ];
         }
 
         return ['environments' => $out, 'unavailable' => false];
-    }
-
-    /**
-     * @return list<array<string, mixed>>|null null when the query cannot run
-     */
-    private static function query(\PDO $pdo, string $slug, bool $withGame): ?array
-    {
-        $cols = 'c.environment, c.state, c.origin, c.last_test_at, c.last_test_ok'.($withGame ? ', c.game' : '');
-        try {
-            $stmt = $pdo->prepare("SELECT {$cols} FROM project_node_clients c JOIN projects p ON p.id = c.project_id WHERE p.slug = :slug");
-            $stmt->execute(['slug' => $slug]);
-            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-        } catch (\PDOException) {
-            return null;
-        }
-
-        return \is_array($rows) ? $rows : null;
     }
 
     /**

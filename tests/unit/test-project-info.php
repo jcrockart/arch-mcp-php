@@ -115,29 +115,51 @@ for ($i = 0; $i < 25; ++$i) {
 $v = ProjectInfo::view($profile($stg, ['lanes' => ['core' => '']]));
 check('dirty file list is capped at 20 but counted in full', 20 === \count($v['git']['dirty_files']) && 27 === $v['git']['dirty_count']);
 
-echo "\nlive events, deployed version, slim output\n";
+
+echo "\nlive events, deployed, lane model, slim output\n";
+require_once $ROOT.'/src/PortalDeployed.php';
 $le = ArchMcp\LiveEvents::describe([
-    ['environment' => 'staging', 'state' => 'connected', 'origin' => 'https://s.example.com', 'last_test_at' => '2026-11-12 10:00:00', 'last_test_ok' => '1', 'game' => '0'],
-    ['environment' => 'production', 'state' => 'disconnected', 'origin' => null, 'last_test_at' => null, 'last_test_ok' => null, 'game' => '1'],
+    ['environment' => 'staging', 'connected' => '1', 'events_on' => '1', 'game' => '0', 'origin_registered' => '1', 'state' => 'updated'],
+    ['environment' => 'production', 'connected' => '0', 'events_on' => '0', 'game' => '1', 'origin_registered' => '0', 'state' => 'error'],
 ]);
-check('live events: staging connected, origin registered, game off', true === $le['environments']['staging']['hub_connected'] && true === $le['environments']['staging']['origin_registered'] && false === $le['environments']['staging']['game']);
-check('live events: events and game are separate switches', false === $le['environments']['production']['events_enabled'] && true === $le['environments']['production']['game']);
-check('live events: last test passed through', ['at' => '2026-11-12 10:00:00', 'ok' => true] === $le['environments']['staging']['last_test'] && null === $le['environments']['production']['last_test']);
-check('live events: no row means not configured', ['configured' => false] === ArchMcp\LiveEvents::describe([])['environments']['staging']);
-check('live events: no app id or fingerprint exposed', !str_contains(json_encode($le), 'app_id') && !str_contains(json_encode($le), 'publisher'));
-$r = ProjectInfo::describe('demo', 'production', $profile($stg, ['profile_environment' => 'staging']), $profile($prd, ['profile_environment' => 'production', 'pull_allowed' => true]), null, null, $le);
-check('live events attached to each view by environment', true === $r['staging']['live_events']['hub_connected'] && false === $r['production']['live_events']['hub_connected']);
-check('deployed block present with head and commit time', true === $r['staging']['deployed']['available'] && 1 === preg_match('/^[0-9a-f]{7,}$/', $r['staging']['deployed']['head']) && is_string($r['staging']['deployed']['committed_at']));
+check('live events: connected staging, game off', ['connected' => true, 'events' => true, 'game' => false, 'origin_registered' => true, 'state' => 'updated'] === $le['environments']['staging']);
+check('live events: game reported as stored when not connected', false === $le['environments']['production']['connected'] && false === $le['environments']['production']['events'] && true === $le['environments']['production']['game']);
+check('live events: events always equals connected', $le['environments']['staging']['events'] === $le['environments']['staging']['connected']);
+check('live events: no row is not_connected, all false', ['connected' => false, 'events' => false, 'game' => false, 'origin_registered' => false, 'state' => 'not_connected'] === ArchMcp\LiveEvents::describe([])['environments']['staging']);
+check('live events: nothing else leaks', !str_contains(json_encode($le), 'app_id') && !str_contains(json_encode($le), 'origin"') && !str_contains(json_encode($le), 'publisher'));
+$dep = ArchMcp\PortalDeployed::shape(['deployed_version' => '0.14.1', 'deployed_commit' => 'e9ac268', 'promoted_at' => '2026-11-13 10:15:00']);
+check('deployed: version, commit, promoted_at in UTC', ['version' => '0.14.1', 'commit' => 'e9ac268', 'promoted_at' => '2026-11-13T10:15:00Z'] === $dep);
+$depNull = ArchMcp\PortalDeployed::shape(['deployed_version' => null, 'deployed_commit' => 'e9ac268', 'promoted_at' => null]);
+check('deployed: nulls stay null, commit kept', null === $depNull['version'] && null === $depNull['promoted_at'] && 'e9ac268' === $depNull['commit']);
+$r = ProjectInfo::describe('demo', 'production', $profile($stg, ['profile_environment' => 'staging']), $profile($prd, ['profile_environment' => 'production', 'pull_allowed' => true]), null, null, $le, false, ['production' => $dep, 'unavailable' => false]);
+check('live events attached to each view by environment', true === $r['staging']['live_events']['connected'] && false === $r['production']['live_events']['connected']);
+check('deployed: production gets it, staging is null', $dep === $r['production']['deployed'] && null === $r['staging']['deployed']);
+check('live_events_note is given once at the top level', str_contains($r['live_events_note'], 'two separate switches') && !isset($r['staging']['live_events_note']));
 check('slim: production keeps only differences plus always keys', isset($r['production']['pull_allowed']) && !isset($r['production']['lanes']) && isset($r['production']['git']) && in_array('lanes', $r['production_same_as_staging'], true));
+$r2 = ProjectInfo::describe('demo', 'production', $profile($stg), $profile($prd), null, null, null, false, ['production' => null, 'unavailable' => true]);
+check('deployed unreadable: flagged, still answers', true === $r2['deployed_unavailable'] && true === $r2['success']);
 $full = ProjectInfo::describe('demo', 'production', $profile($stg), $profile($prd, ['pull_allowed' => true]), null, null, null, true);
 check('verbose: full production view, no omitted list', isset($full['production']['lanes']) && !isset($full['production_same_as_staging']));
 $same = ProjectInfo::describe('demo', 'production', $profile($stg), $profile($stg));
-check('same checkout: production view is just the environment keys', !isset($same['production']['git']) && 'all other keys' !== '' && in_array('git', $same['production_same_as_staging'], true));
+check('same checkout: production view is just the environment keys', !isset($same['production']['git']) && in_array('git', $same['production_same_as_staging'], true));
 $n = ProjectInfo::sections("# Hosting\nShared PHP host.\n\nLimits:\nNo cron.\n\nPlain paragraph.");
 check('notes split into titled sections', 3 === count($n) && 'Hosting' === $n[0]['title'] && 'Limits' === $n[1]['title'] && null === $n[2]['title']);
 check('no notes gives null', null === ProjectInfo::sections(null) && null === ProjectInfo::sections("  \n"));
 check('db rules say db_apply_allowed does not gate the db tools', str_contains(ProjectInfo::DB_RULES, 'db_apply_allowed') && str_contains(ProjectInfo::DB_RULES, 'read-only checks'));
 
+echo "\nlane model\n";
+$lm = sys_get_temp_dir().'/archlm'.getmypid();
+mkdir($lm, 0775, true);
+file_put_contents("$lm/arch-gate.json", json_encode(['code' => ['stage' => ['paths' => ['src', 'metadata']]]]));
+check('code lane stages metadata: one-lane', 'one-lane (code lane carries metadata)' === ProjectInfo::laneModel($lm));
+file_put_contents("$lm/arch-gate.json", json_encode(['code' => ['stage' => ['paths' => ['src', 'public']]], 'metadata' => ['stage' => ['paths' => ['metadata']]]]));
+check('code lane without metadata: two-lane', str_starts_with((string) ProjectInfo::laneModel($lm), 'two-lane (code lane for the app, metadata lane for metadata/'));
+file_put_contents("$lm/arch-gate.json", json_encode(['code' => ['stage' => ['paths' => ['metadata/entities']]]]));
+check('a sub-folder of metadata counts as one-lane', str_starts_with((string) ProjectInfo::laneModel($lm), 'one-lane'));
+check('no readable gate file: null', null === ProjectInfo::laneModel("$lm/none"));
+$r = ProjectInfo::describe('demo', 'production', $profile($lm), null);
+check('lane_model is a top-level field of describe()', array_key_exists('lane_model', $r) && str_starts_with((string) $r['lane_model'], 'one-lane'));
+exec('rm -rf '.escapeshellarg($lm));
 
 exec('rm -rf '.escapeshellarg($base));
 printf("\n%d passed, %d failed\n", $pass, $fail);
