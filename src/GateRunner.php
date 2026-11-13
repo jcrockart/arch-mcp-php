@@ -2,6 +2,7 @@
 
 namespace ArchMcp;
 
+require_once __DIR__.'/ClassFileCheck.php';
 require_once __DIR__.'/MetadataValidator.php';
 
 /**
@@ -76,6 +77,12 @@ final class GateRunner
     public static function validateOnly(string $repoPath): array
     {
         $r = MetadataValidator::run($repoPath);
+        // The same bootstrap check a commit adds (ARCH-85), so it can be seen before committing.
+        if (ClassFileCheck::applies($repoPath)) {
+            $c = ClassFileCheck::run($repoPath);
+
+            return ['ok' => $r['ok'] && $c['ok'], 'output' => $r['output']."\n-- ".ClassFileCheck::STEP."\n".$c['output']];
+        }
 
         return ['ok' => $r['ok'], 'output' => $r['output']];
     }
@@ -87,6 +94,11 @@ final class GateRunner
      */
     private static function runStep(string $repoPath, array $step): array
     {
+        if (ClassFileCheck::STEP === ($step['builtin'] ?? null)) {
+            $c = ClassFileCheck::run($repoPath);
+
+            return [$c['ok'], $c['output']];
+        }
         if (isset($step['builtin'])) {
             $r = MetadataValidator::run($repoPath);
 

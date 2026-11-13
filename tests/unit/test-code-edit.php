@@ -114,6 +114,24 @@ check('write-extension allowlist still applies', false === $r['success'] && str_
 $r = CodeEdit::run($restricted, 'notes.md', 'hello', 'goodbye');
 check('...and an allowed type still edits', true === $r['success'] && "goodbye\n" === file_get_contents("$base/notes.md"));
 
+echo "a stale `old` shows the nearby text (ARCH-86)\n";
+$file = "<?php\nfunction a() {\n    return 1;\n}\n\nfunction b() {\n    return \$x + 2;\n}\n";
+$r = CodeEdit::apply($file, "function b() {\n    return \$x + 3;\n}", 'x');
+check('stale old: still a refusal with matches 0', false === $r['success'] && 0 === $r['matches']);
+check('...the reply shows where the file is now', isset($r['nearby']) && str_contains($r['nearby']['text'], 'return $x + 2;') && 5 === $r['nearby']['line']);
+check('...and a hint to re-read', isset($r['hint']) && str_contains($r['hint'], 'nearby'));
+$r = CodeEdit::apply($file, "function b() {\n        return \$x + 2;\n}", 'x');
+check('whitespace-only difference is called out', isset($r['nearby']['differs_only_in_whitespace']));
+$r = CodeEdit::apply("alpha\r\nbeta\r\n", "alpha\nbetax", 'x');
+check('CRLF files are handled', isset($r['nearby']) && 1 === $r['nearby']['line']);
+$r = CodeEdit::apply($file, "completely different text here", 'x');
+check('no matching line at all: a hint, no nearby text', !isset($r['nearby']) && isset($r['hint']));
+$r = CodeEdit::apply($file, 'return 1;', 'x');
+check('a successful match never carries nearby', true === $r['success'] && !isset($r['nearby']));
+$big = str_repeat("some line of fairly ordinary code here\n", 200);
+$r = CodeEdit::apply($big, str_repeat("some line of fairly ordinary code here\n", 120).'tail', 'x');
+check('the excerpt is capped', isset($r['nearby']) && strlen($r['nearby']['text']) <= 2003);
+
 exec('rm -rf '.escapeshellarg($base));
 printf("\n%d passed, %d failed\n", $pass, $fail);
 exit($fail > 0 ? 1 : 0);

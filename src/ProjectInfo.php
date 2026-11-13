@@ -5,6 +5,8 @@ namespace ArchMcp;
 require_once __DIR__.'/ProjectUrls.php';
 require_once __DIR__.'/ProjectDatabase.php';
 require_once __DIR__.'/ProjectMail.php';
+require_once __DIR__.'/DeployedVersion.php';
+require_once __DIR__.'/LiveEvents.php';
 
 /**
  * One-call project summary, added 2026-10-06 (arch_project_info): what a
@@ -20,18 +22,32 @@ require_once __DIR__.'/ProjectMail.php';
  * describe the same directory.
  *
  * Read-only. Never fetches or contacts origin (arch_prod_state does that).
+ *
+ * Output size (ARCH-88): by default the production view lists only what
+ * differs from the staging view, plus the always-useful keys (profile_environment,
+ * git, deployed, live_events, session); `production_same_as_staging` names the
+ * keys left out. `verbose` returns the full views and the raw environment notes.
+ * The notes are split into titled sections in the default form.
  */
 final class ProjectInfo
 {
+    /** Keys kept in the production view even when they equal staging's. */
+    private const ALWAYS = ['profile_environment', 'git', 'deployed', 'live_events', 'session'];
+
+    /** What the database rules are, once, instead of in every tool description (ARCH-87). */
+    public const DB_RULES = "Who may use which database tool is decided by the caller's role on the project, not by db_apply_allowed. db_read_staging, db_pending_staging and db_migrate_staging work on staging for contributors and above. db_read_prod and db_pending_prod are read-only checks on production for the project Owner; db_migrate_prod is the Owner's too, and a destructive production migration is confirmed only by Portal. db_apply_allowed in a profile governs the old per-profile apply and is not what allows or refuses these tools. To change staging DATA once (a backfill), write a migration file in db/migrations with `-- id:` and `-- type:` headers and run it with db_migrate_staging; there is no tool for a loose UPDATE. A data change that must reach production goes the same way, as a migration.";
+
     /**
      * @param array<string, mixed>      $staging    profile the staging-kind tools resolve to
      * @param array<string, mixed>|null $production profile the production-kind tools resolve to, or null if none
      * @param array{text: ?string, truncated: bool, unavailable: bool}|null $notes the project's environment notes (ProjectNotes), or null if not read
      * @param array{environments: ?array<string, array<string, mixed>>, unavailable: bool}|null $hostFacts the project's host facts (ProjectHostFacts), or null if not read
+     * @param array{environments: ?array<string, array<string, mixed>>, unavailable: bool}|null $liveEvents the project's live-events state (LiveEvents), or null if not read
+     * @param bool $verbose return the full production view and the raw environment notes
      *
      * @return array<string, mixed>
      */
-    public static function describe(string $slug, string $portalEnvironment, array $staging, ?array $production, ?array $notes = null, ?array $hostFacts = null): array
+    public static function describe(string $slug, string $portalEnvironment, array $staging, ?array $production, ?array $notes = null, ?array $hostFacts = null, ?array $liveEvents = null, bool $verbose = false): array
     {
         $out = [
             'success' => true,
@@ -40,8 +56,19 @@ final class ProjectInfo
             'staging' => self::view($staging),
             'production' => null === $production ? null : self::view($production),
             'urls' => ProjectUrls::forCheckout(self::checkoutDir($staging)),
-            'environment_notes' => $notes['text'] ?? null,
+            'environment_notes' => $verbose ? ($notes['text'] ?? null) : self::sections($notes['text'] ?? null),
+            'db_rules' => self::DB_RULES,
         ];
+        foreach (['staging', 'production'] as $k) {
+            if (null === $out[$k]) {
+                continue;
+            }
+            $env = $out[$k]['profile_environment'] ?? $k;
+            $out[$k]['live_events'] = $liveEvents['environments'][$env] ?? null;
+        }
+        if (true === ($liveEvents['unavailable'] ?? false)) {
+            $out['live_events_unavailable'] = true;
+        }
         if (true === ($notes['truncated'] ?? false)) {
             $out['environment_notes_truncated'] = true;
         }
@@ -61,9 +88,71 @@ final class ProjectInfo
         if (null === $production) {
             $out['note'] = 'no production profile row resolves for this project from this address';
         }
+        if (!$verbose && null !== $production) {
+            [$out['production'], $out['production_same_as_staging']] = self::slim($out['staging'], $out['production'], $out['same_checkout']);
+        }
 
         return $out;
     }
+
+    /**
+     * The production view reduced to what differs from staging, plus the
+     * always keys; with one shared checkout only the keys that are per
+     * environment. Returns the slim view and the list of keys left out.
+     *
+     * @param array<string, mixed> $staging
+     * @param array<string, mixed> $production
+     *
+     * @return array{0: array<string, mixed>, 1: list<string>}
+     */
+    private static function slim(array $staging, array $production, bool $sameCheckout): array
+    {
+        $keep = $sameCheckout ? ['profile_environment', 'live_events'] : self::ALWAYS;
+        $slim = [];
+        $left = [];
+        foreach ($production as $key => $value) {
+            if (\in_array($key, $keep, true) || ($staging[$key] ?? null) !== $value) {
+                $slim[$key] = $value;
+            } else {
+                $left[] = $key;
+            }
+        }
+
+        return [$slim, $left];
+    }
+
+    /**
+     * Split environment notes into titled sections: blocks separated by a blank
+     * line; a first line that is a markdown heading or a short line ending in a
+     * colon becomes the title. Text is passed on unchanged.
+     *
+     * @return list<array{title: ?string, text: string}>|null
+     */
+    public static function sections(?string $text): ?array
+    {
+        if (null === $text || '' === trim($text)) {
+            return null;
+        }
+        $out = [];
+        foreach (preg_split('/\n\s*\n/', trim($text)) ?: [] as $block) {
+            $block = trim($block);
+            if ('' === $block) {
+                continue;
+            }
+            $lines = explode("\n", $block, 2);
+            $first = trim($lines[0]);
+            if (1 === preg_match('/^#{1,6}\s+(.+)$/', $first, $m)) {
+                $out[] = ['title' => trim($m[1]), 'text' => trim($lines[1] ?? '')];
+            } elseif (isset($lines[1]) && mb_strlen($first) <= 60 && str_ends_with($first, ':')) {
+                $out[] = ['title' => rtrim($first, ':'), 'text' => trim($lines[1])];
+            } else {
+                $out[] = ['title' => null, 'text' => $block];
+            }
+        }
+
+        return $out;
+    }
+
 
     /**
      * @param array<string, mixed> $p
@@ -94,6 +183,7 @@ final class ProjectInfo
         $view['database'] = ProjectDatabase::forCheckout($dir);
         $view['mail'] = ProjectMail::forCheckout($dir);
         $view['git'] = self::gitState($dir);
+        $view['deployed'] = DeployedVersion::forCheckout($dir);
         $view['session'] = self::session((string) ($p['root'] ?? ''));
 
         return $view;

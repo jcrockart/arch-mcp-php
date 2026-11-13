@@ -115,7 +115,7 @@ $p = [
 $notes = ProjectNotes::clean('Hand written notes.');
 $r = ProjectInfo::describe('demo', 'production', $p, null, $notes, ProjectHostFacts::parse($stored));
 check('host_facts is its own top-level key, per environment', ['staging', 'production'] === array_keys($r['host_facts']) && $stagingText === $r['host_facts']['staging']['text']);
-check('environment_notes is untouched by it', 'Hand written notes.' === $r['environment_notes'] && !isset($r['environment_notes_truncated']));
+check('environment_notes is untouched by it', [['title' => null, 'text' => 'Hand written notes.']] === $r['environment_notes'] && !isset($r['environment_notes_truncated']));
 check('no flag when nothing is wrong', !isset($r['host_facts_unavailable']));
 $r = ProjectInfo::describe('demo', 'production', $p, null, $notes, ProjectHostFacts::parse(null));
 check('not set: the key is present and null', \array_key_exists('host_facts', $r) && null === $r['host_facts'] && !isset($r['host_facts_unavailable']));
@@ -123,7 +123,7 @@ $r = ProjectInfo::describe('demo', 'production', $p, null, $notes);
 check('facts not read at all: the key is present and null', \array_key_exists('host_facts', $r) && null === $r['host_facts']);
 $r = ProjectInfo::describe('demo', 'production', $p, null, $notes, ProjectHostFacts::fetchWith($old, 'x'));
 check('an unreadable value carries the unavailable flag and still answers', true === $r['host_facts_unavailable'] && null === $r['host_facts'] && true === $r['success']);
-check('the rest of the reply is unchanged', isset($r['urls']) && ['code', 'core'] === $r['staging']['lanes'] && 'Hand written notes.' === $r['environment_notes']);
+check('the rest of the reply is unchanged', isset($r['urls']) && ['code', 'core'] === $r['staging']['lanes'] && [['title' => null, 'text' => 'Hand written notes.']] === $r['environment_notes']);
 
 exec('rm -rf '.escapeshellarg($base));
 printf("\n%d passed, %d failed\n", $pass, $fail);

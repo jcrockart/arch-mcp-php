@@ -25,6 +25,7 @@ require_once __DIR__.'/BootstrapRegister.php';
 require_once __DIR__.'/BootstrapRead.php';
 require_once __DIR__.'/ProjectNotes.php';
 require_once __DIR__.'/ProjectHostFacts.php';
+require_once __DIR__.'/LiveEvents.php';
 require_once __DIR__.'/BindingMode.php';
 require_once __DIR__.'/BindingGate.php';
 require_once __DIR__.'/ProjectBindings.php';
@@ -273,6 +274,10 @@ final class ProjectsTools
     // -----------------------------------------------------------------
 
     /**
+     * Open an editing session (a git branch) on this project. One session at a time;
+     * refused if one is already open. Edits and writes need a session. Commit it with
+     * arch_session_commit or drop it with arch_session_discard.
+     *
      * @param string $lane leave empty to follow the project: 'code' when its code lane also stages metadata/ (one-lane projects), otherwise 'metadata'. Pass 'code' or 'metadata' to choose.
      */
     public function archSessionStart(string $slug, string $name = '', string $lane = '', string $claudeProjectId = ''): array
@@ -332,6 +337,16 @@ final class ProjectsTools
         return $t->recoverSession($name, $lane);
     }
 
+    /**
+     * Run the lane's gate (lint, validate, tests and the built-in check that every
+     * class file in src/ is loaded by src/bootstrap.php), then commit the session and
+     * merge it into main. If the gate fails the session stays open: fix the problem
+     * and commit again. Do the edits and the commit in separate turns, so the diff can
+     * be read in between; a commit within a second of a write is refused once, and a
+     * second call goes through. `bump` is patch, minor or major for versioned projects.
+     * The commit lands on this project's staging checkout; production changes only
+     * when an owner runs Review & pull in Portal.
+     */
     public function archSessionCommit(string $slug, string $bump = 'patch', string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -345,6 +360,11 @@ final class ProjectsTools
         return $t->archSessionCommit($bump);
     }
 
+    /**
+     * Throw away the active session. Changes to staged paths, including new untracked
+     * files, are kept for 7 days on a discarded/<name> branch (see
+     * arch_session_recover); nothing outside the stage paths is touched.
+     */
     public function archSessionDiscard(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -358,6 +378,12 @@ final class ProjectsTools
         return $t->archSessionDiscard();
     }
 
+    /**
+     * Where the active session stands: its name, lane, branch, files changed so far
+     * (staged paths only) and whether a commit would be allowed. Read-only and cheap;
+     * call it first after any pause to see if a session is open. If no session is
+     * open it says so.
+     */
     public function archSessionStatus(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -450,6 +476,13 @@ final class ProjectsTools
     // gate needed here beyond profile resolution.
     // -----------------------------------------------------------------
 
+    /**
+     * Write one whole code-lane file (create or replace). Needs an active session.
+     * Paths must be inside the lane's stage paths and of an allowed file type. Prefer
+     * arch_code_edit_many for changes to existing files. A large write can be refused
+     * by the host's firewall with a 403; that is transient, so retry once, or send the
+     * file in smaller pieces.
+     */
     public function archCodeWriteFile(string $slug, string $path, string $content, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
@@ -485,6 +518,9 @@ final class ProjectsTools
         return $t->archCodeReadFile($path);
     }
 
+    /**
+     * List the files in the code lane (stage paths), with sizes. Needs no session.
+     */
     public function archCodeListFiles(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
@@ -564,28 +600,35 @@ final class ProjectsTools
 
     /**
      * Make several exact-text edits in one call, across one or more
-     * code-lane files. `editsJson` is a JSON list of objects, each with
-     * string fields "path", "old" and "new", for example
-     * [{"path":"src/a.php","old":"$x = 1;","new":"$x = 2;"}]. Every edit
-     * follows arch_code_edit_file: `old` must match exactly once. Edits to
-     * the same file are applied in order, each on the result of the one
-     * before. ALL-OR-NOTHING ON MATCHING: if any edit fails to match
-     * exactly once, nothing is written and the reply names the failing edit
-     * by its position (1 = first). At most 50 edits per call. Needs an
-     * active session on the code lane and obeys the same path and file-type
-     * limits as arch_code_write_file; if a write is refused part way
-     * (file types are checked per file) the reply lists the files already
-     * written, which are not rolled back. The reply gives counts and line
-     * numbers, never file content.
+     * code-lane files. `edits` is a list of objects, each with string fields
+     * "path", "old" and "new". Every edit follows arch_code_edit_file: `old`
+     * must match exactly once. Edits to the same file are applied in order,
+     * each on the result of the one before. ALL-OR-NOTHING ON MATCHING: if
+     * any edit fails to match exactly once, nothing is written and the reply
+     * names the failing edit by its position (1 = first) and shows the
+     * nearby text it found. At most 50 edits per call. Needs an active
+     * session on the code lane and obeys the same path and file-type limits
+     * as arch_code_write_file; if a write is refused part way (file types
+     * are checked per file) the reply lists the files already written, which
+     * are not rolled back. The reply gives counts and line numbers, never
+     * file content. `editsJson` is the old way to pass the same list as a
+     * JSON string; it still works but is deprecated, so pass `edits`.
      *
      * @param string $slug      project slug
-     * @param string $editsJson JSON list of {"path": ..., "old": ..., "new": ...}
+     * @param list<array{path: string, old: string, new: string}> $edits the edits, in order
+     * @param string $editsJson deprecated: the same list as a JSON string; ignored when `edits` is given
      */
-    public function archCodeEditMany(string $slug, string $editsJson, string $claudeProjectId = ''): array
+    public function archCodeEditMany(string $slug, array $edits = [], string $editsJson = '', string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
+        if (\is_array($t)) {
+            return $t;
+        }
+        if ([] === $edits && '' !== $editsJson) {
+            return CodeEditMany::runJson($t, $editsJson);
+        }
 
-        return \is_array($t) ? $t : CodeEditMany::runJson($t, $editsJson);
+        return CodeEditMany::run($t, $edits);
     }
 
     // arch_code_read_range was folded into arch_code_read_file (start/end).
@@ -762,10 +805,22 @@ final class ProjectsTools
      * `claude_project_ids` that YOU registered for this project (other
      * people's are never listed) and a `note` saying what to do next.
      *
+     * Short form by default: the `production` view lists only what differs from
+     * `staging` plus profile_environment, git, deployed, live_events and session,
+     * and `production_same_as_staging` names the keys left out; the environment
+     * notes come as titled sections. Pass `verbose` true for the full views and
+     * the raw notes. Each environment view also has `deployed` (version, tag, head
+     * commit, when it was committed and when the checkout last moved, which on
+     * production is when it was pulled) and `live_events` (from Portal: whether
+     * the hub connection is up, whether the browser origin is registered, the
+     * separate `game` switch, and the last connection test; {"configured": false}
+     * when there is none). `db_rules` says once who may use which database tool.
+     *
      * @param string $slug            project slug
+     * @param bool   $verbose         full production view and raw environment notes (default false)
      * @param string $claudeProjectId not needed: this tool is exempt from the ID check, and it is where the ID comes from
      */
-    public function archProjectInfo(string $slug, string $claudeProjectId = ''): array
+    public function archProjectInfo(string $slug, bool $verbose = false, string $claudeProjectId = ''): array
     {
         $staging = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'staging');
         if (null === $staging) {
@@ -778,7 +833,8 @@ final class ProjectsTools
         $notes = ProjectNotes::fetch($slug, $this->environment, $this->logger);
 
         $hostFacts = ProjectHostFacts::fetch($slug, $this->environment, $this->logger);
-        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes, $hostFacts);
+        $liveEvents = LiveEvents::fetch($slug, $this->environment, $this->logger);
+        $info = ProjectInfo::describe($slug, $this->environment, $staging, $production, $notes, $hostFacts, $liveEvents, $verbose);
         $caller = $this->bindingCaller();
         $registry = BindingGuard::CALLER_USER === $caller ? ProjectBindings::fetch($slug, $this->environment, $this->logger) : null;
         $info['binding'] = ProjectBindings::describe(BindingMode::load(), $caller, $this->portalUserId, $registry);
@@ -1178,6 +1234,10 @@ final class ProjectsTools
     // — no extra check needed here.
     // -----------------------------------------------------------------
 
+    /**
+     * Git status of this project's staging checkout: branch, HEAD and changed files.
+     * Read-only.
+     */
     public function archCoreGitStatus(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -1185,6 +1245,12 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreGitStatus();
     }
 
+    /**
+     * Git diff of the staging checkout. `ref` is a commit, tag or a range such as
+     * v0.1.50..v0.1.54 (what changed between two versions); the default HEAD shows
+     * uncommitted changes. `path` limits it to one file. Read-only; output is
+     * truncated when large.
+     */
     public function archCoreGitDiff(string $slug, string $ref = 'HEAD', string $path = '', string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -1192,6 +1258,10 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreGitDiff($ref, $path);
     }
 
+    /**
+     * Recent commits of the staging checkout, newest first. `count` is clamped to
+     * 1..200. `path` limits it to one file. Read-only.
+     */
     public function archCoreGitLog(string $slug, int $count = 10, string $path = '', string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -1199,6 +1269,9 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreGitLog($count, $path);
     }
 
+    /**
+     * Show one file as it was at a commit or tag (`ref`). Read-only.
+     */
     public function archCoreGitShow(string $slug, string $ref, string $path, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -1206,6 +1279,10 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreGitShow($ref, $path);
     }
 
+    /**
+     * Fetch origin into the staging checkout (updates remote refs only). Read-only
+     * for the working tree.
+     */
     public function archCoreGitFetch(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -1213,6 +1290,10 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreGitFetch();
     }
 
+    /**
+     * Fast-forward the PRODUCTION checkout to origin. Owners and admins only; this is
+     * what Portal's Review & pull does. Refused if not a fast-forward.
+     */
     public function archCoreGitPullFastForward(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'production', $claudeProjectId);
@@ -1220,6 +1301,11 @@ final class ProjectsTools
         return \is_array($t) ? $t : $t->archCoreGitPullFastForward();
     }
 
+    /**
+     * Push the staging checkout's main to origin. `expectedHead` must equal the
+     * current HEAD (from arch_core_git_status), so a push never carries commits you
+     * have not seen.
+     */
     public function archCoreGitPushOrigin(string $slug, string $expectedHead, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugProcess($slug, 'staging', $claudeProjectId);
@@ -1277,6 +1363,10 @@ final class ProjectsTools
     // db_migrate_* replace them.
     // -----------------------------------------------------------------
 
+    /**
+     * Install the project's dependencies (the manager set for the project, for
+     * example composer install) on staging. Only where the project allows it.
+     */
     public function archDependencyInstall(string $slug, string $claudeProjectId = ''): array
     {
         $t = $this->forSlugFile($slug, 'staging', $claudeProjectId);
@@ -1306,6 +1396,10 @@ final class ProjectsTools
     // happened not to collide.
     // -----------------------------------------------------------------
 
+    /**
+     * Used only when creating a project: fills in the inception row for `targetSlug`
+     * using the one-time `token`. Not for normal work.
+     */
     public function archBootstrapFillInceptionRow(string $slug, string $targetSlug, string $token, string $configJson, string $gitRemote = ''): array
     {
         $t = $this->forSlugFile($slug, 'production');
