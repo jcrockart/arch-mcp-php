@@ -65,6 +65,7 @@ require_once __DIR__.'/SessionRecover.php';
 require_once __DIR__.'/SessionStart.php';
 require_once __DIR__.'/SessionList.php';
 require_once __DIR__.'/SessionVersion.php';
+require_once __DIR__.'/CommitPin.php';
 
 final class ArchTools
 {
@@ -1446,9 +1447,15 @@ final class ArchTools
      *    (status/diff/log/show/fetch are the only subcommands runGit()
      *    will ever run) is unchanged by this method's existence.
      *
-     * @return array{exit_code: int, stdout: string, stderr: string, before?: string, after?: string, pulled?: bool}
+     * With `$atCommit` (40 lowercase hex) the fast-forward goes to exactly that commit
+     * instead of the live origin tip: it must be on origin/<pull_branch>, a fast-forward
+     * of HEAD, and the tree clean (see CommitPin::pull). A bad id, an unknown commit, a
+     * diverged tree or a failed fetch is refused with a `reason` and HEAD unchanged. Empty
+     * leaves the behaviour above exactly as it was.
+     *
+     * @return array{exit_code: int, stdout: string, stderr: string, before?: string, after?: string, pulled?: bool, reason?: string, target?: string}
      */
-    public function archCoreGitPullFastForward(): array
+    public function archCoreGitPullFastForward(string $atCommit = ''): array
     {
         if (!$this->pullAllowed) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token is not permitted to pull'];
@@ -1457,6 +1464,20 @@ final class ArchTools
         $root = $this->laneRoot('core');
         if (null === $root) {
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'this token has no core lane'];
+        }
+
+        if ('' !== $atCommit) {
+            $pinned = CommitPin::pull($root, $this->pullBranch, $atCommit);
+            $this->logger->info('git merge --ff-only <commit> (core lane, gated).', [
+                'branch' => $this->pullBranch,
+                'target' => $atCommit,
+                'before' => $pinned['before'] ?? null,
+                'after' => $pinned['after'] ?? null,
+                'exit_code' => $pinned['exit_code'],
+                'reason' => $pinned['reason'] ?? null,
+            ]);
+
+            return $pinned;
         }
 
         $status = $this->execGit(['status', '--porcelain'], $root);

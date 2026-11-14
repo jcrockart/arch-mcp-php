@@ -2,6 +2,8 @@
 
 namespace ArchMcp;
 
+require_once __DIR__.'/CommitPin.php';
+
 /**
  * The migrations a pull would bring in, listed BEFORE the pull (added 2026-10-29
  * for Portal's Review & pull page).
@@ -34,11 +36,17 @@ final class IncomingMigrations
     /**
      * @param list<string> $appliedIds  ids recorded in the production database
      * @param list<string> $checkoutIds ids already declared in the production checkout
+     * @param string       $atCommit    empty = the live origin/<pull_branch> tip (as always); 40
+     *                                  lowercase hex = read the migrations at exactly that commit,
+     *                                  which must be on origin/<pull_branch>
      *
      * @return array<string, mixed>
      */
-    public static function forPull(string $root, string $coreSub, string $pullBranch, array $appliedIds, array $checkoutIds): array
+    public static function forPull(string $root, string $coreSub, string $pullBranch, array $appliedIds, array $checkoutIds, string $atCommit = ''): array
     {
+        if ('' !== $atCommit && !CommitPin::isValid($atCommit)) {
+            return ['available' => false, 'reason' => 'invalid_commit', 'error' => CommitPin::NOT_VALID];
+        }
         if (1 !== preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]*$#', $pullBranch) || str_contains($pullBranch, '..')) {
             return ['available' => false, 'error' => 'this profile has an invalid pull_branch'];
         }
@@ -49,7 +57,7 @@ final class IncomingMigrations
         if (!is_dir($root)) {
             return ['available' => false, 'error' => 'the checkout directory does not exist'];
         }
-        $ref = 'origin/'.$pullBranch;
+        $ref = '' === $atCommit ? 'origin/'.$pullBranch : $atCommit;
         $dir = ('' === $sub ? '' : $sub.'/').'db/migrations';
 
         $fetch = self::git($root, ['fetch', 'origin']);
@@ -59,14 +67,100 @@ final class IncomingMigrations
             $base['fetch_error'] = trim($fetch['stderr']);
         }
 
+        if ('' !== $atCommit) {
+            if (!$fetchOk) {
+                return ['available' => false, 'reason' => 'fetch_failed', 'ref' => $ref, 'fetch_ok' => false, 'fetch_error' => trim($fetch['stderr']), 'error' => 'git fetch origin failed, so the commit cannot be checked against origin'];
+            }
+            $pin = CommitPin::verify($root, $pullBranch, $atCommit, false, false, false);
+            if (!$pin['ok']) {
+                return ['available' => false, 'reason' => $pin['reason'], 'ref' => $ref, 'fetch_ok' => $fetchOk, 'error' => $pin['error']];
+            }
+            $base['at_commit'] = $atCommit;
+        }
+
         $verify = self::git($root, ['rev-parse', '--verify', '--quiet', $ref.'^{commit}']);
         if (0 !== $verify['exit_code'] || '' === trim($verify['stdout'])) {
             return ['available' => false, 'ref' => $ref, 'fetch_ok' => $fetchOk, 'error' => "{$ref} is not known in this checkout"] + ($fetchOk ? [] : ['fetch_error' => trim($fetch['stderr'])]);
         }
 
+        $read = self::readFiles($root, $ref, $dir);
+        if (null !== $read['error']) {
+            return ['available' => false, 'ref' => $ref, 'fetch_ok' => $fetchOk, 'error' => $read['error']];
+        }
+
+        $built = self::fromContents($read['files'], $appliedIds, $checkoutIds);
+
+        return $base + [
+            'migrations' => $built['migrations'],
+            'count' => \count($built['migrations']),
+            'problems' => array_merge($read['problems'], $built['problems']),
+        ];
+    }
+
+    /**
+     * Every migration declared at ONE commit, with its SQL, in file-name order. Used by the
+     * SHA-pinned apply, which must run exactly what was judged. Read-only: `git ls-tree` and
+     * `git show` only, no fetch. The caller has already proved the commit is on origin
+     * (CommitPin::verify); this only checks the id is well formed.
+     *
+     * A file with no valid header, or an id declared twice, is a problem: a pinned apply
+     * must refuse rather than silently skip it.
+     *
+     * @return array{available: bool, error?: string, migrations: list<array<string, mixed>>, problems: list<string>}
+     */
+    public static function filesAtCommit(string $root, string $coreSub, string $sha): array
+    {
+        $none = ['migrations' => [], 'problems' => []];
+        if (!CommitPin::isValid($sha)) {
+            return ['available' => false, 'error' => CommitPin::NOT_VALID] + $none;
+        }
+        $sub = trim($coreSub, '/');
+        if ('' !== $sub && (1 !== preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]*$#', $sub) || str_contains($sub, '..'))) {
+            return ['available' => false, 'error' => 'this profile has an invalid core lane folder'] + $none;
+        }
+        if (!is_dir($root)) {
+            return ['available' => false, 'error' => 'the checkout directory does not exist'] + $none;
+        }
+        $dir = ('' === $sub ? '' : $sub.'/').'db/migrations';
+        $read = self::readFiles($root, $sha, $dir);
+        if (null !== $read['error']) {
+            return ['available' => false, 'error' => $read['error']] + $none;
+        }
+
+        $problems = $read['problems'];
+        $migrations = [];
+        $seen = [];
+        $files = $read['files'];
+        ksort($files);
+        foreach ($files as $name => $content) {
+            $m = DbMigrations::parse($content);
+            if (null === $m) {
+                $problems[] = "{$name}: missing '-- id:' or '-- type:' header, so it would be ignored";
+                continue;
+            }
+            if (isset($seen[$m['id']])) {
+                $problems[] = "duplicate migration id '{$m['id']}' in {$seen[$m['id']]} and {$name}";
+                continue;
+            }
+            $seen[$m['id']] = $name;
+            $m['file'] = $name;
+            $migrations[] = $m;
+        }
+
+        return ['available' => true, 'migrations' => $migrations, 'problems' => $problems];
+    }
+
+    /**
+     * The shared reader: list db/migrations at a ref and `git show` each .sql file.
+     * `error` is non-null only when the folder could not be listed at all.
+     *
+     * @return array{files: array<string, string>, problems: list<string>, error: ?string}
+     */
+    private static function readFiles(string $root, string $ref, string $dir): array
+    {
         $tree = self::git($root, ['ls-tree', '--name-only', $ref, $dir.'/']);
         if (0 !== $tree['exit_code']) {
-            return ['available' => false, 'ref' => $ref, 'fetch_ok' => $fetchOk, 'error' => 'could not list '.$dir.' on '.$ref.': '.trim($tree['stderr'])];
+            return ['files' => [], 'problems' => [], 'error' => 'could not list '.$dir.' on '.$ref.': '.trim($tree['stderr'])];
         }
         $names = [];
         foreach (explode("\n", $tree['stdout']) as $line) {
@@ -96,13 +190,7 @@ final class IncomingMigrations
             $files[basename($path)] = $show['stdout'];
         }
 
-        $built = self::fromContents($files, $appliedIds, $checkoutIds);
-
-        return $base + [
-            'migrations' => $built['migrations'],
-            'count' => \count($built['migrations']),
-            'problems' => array_merge($problems, $built['problems']),
-        ];
+        return ['files' => $files, 'problems' => $problems, 'error' => null];
     }
 
     /**
