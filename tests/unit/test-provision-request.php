@@ -241,6 +241,24 @@ foreach ($codes as $code) {
     check("$code: relayed, link kept, one call", $same && 1 === \count($p->calls));
     check("$code: next shows the link, says do not retry or work around it, no git pull or db_migrate_prod", str_contains($r['next'], $link) && str_contains($r['next'], 'Do not retry') && str_contains($r['next'], 'git pull') && str_contains($r['next'], 'db_migrate_prod'));
 }
+// A framework project (P13): Portal answers HTTP 200 with success false, result refused, code
+// excluded_project and its admin Promote page as promote_url, for status and for promote.
+$fwLink = 'https://portal.crockart.com.au/admin_promote_details.php?label=arch-portal';
+foreach ([false, true] as $only) {
+    $reply = ['success' => false, 'result' => 'refused', 'code' => 'excluded_project', 'message' => 'This project cannot be promoted from chat.', 'promote_url' => $fwLink] + ($only ? ['would_promote' => false] : ['log_id' => 11]);
+    $p = new FakeProvisionPortal($reply);
+    $r = PromoteRequest::run($p, 'arch-portal', $H, $only, $uuid, '', $issuers);
+    $label = $only ? 'check only' : 'promote';
+    check("framework project, $label: Portal's refusal and its link come back unchanged, one call", false === $r['success'] && 'refused' === $r['result'] && 'excluded_project' === $r['code'] && $fwLink === $r['promote_url'] && $reply['message'] === $r['message'] && 1 === \count($p->calls));
+    check("framework project, $label: next shows the link, says it needs a Portal admin, and still says do not work around it", str_contains($r['next'], $fwLink) && str_contains($r['next'], 'Portal admin') && str_contains($r['next'], 'Do not retry') && str_contains($r['next'], 'git pull'));
+    check("framework project, $label: no invented project page link beside Portal's", !isset($r['project_url']));
+}
+$p = new FakeProvisionPortal(['success' => false, 'result' => 'refused', 'code' => 'excluded_project', 'message' => 'No.']);
+$r = PromoteRequest::run($p, 'arch-portal', $H, false, $uuid, '', $issuers);
+check('framework project with no link from Portal: the project page is offered, still says a Portal admin', 'https://portal.crockart.com.au/project.php?slug=arch-portal' === $r['project_url'] && str_contains($r['next'], 'Portal admin'));
+$p = new FakeProvisionPortal(['success' => true, 'result' => 'refused', 'code' => 'flag_off', 'message' => 'Off.', 'promote_url' => $link]);
+$r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+check('an ordinary refusal does not mention a Portal admin', !str_contains($r['next'], 'Portal admin'));
 foreach (['apply_failed', 'pull_failed'] as $code) {
     $reply = ['success' => true, 'result' => 'failed', 'code' => $code, 'message' => "Portal says $code.", 'promote_url' => $link, 'migrations' => ['applied' => [], 'failed' => '0006_x', 'applied_before_failure' => ['0005_a']]];
     $p = new FakeProvisionPortal($reply);

@@ -1681,6 +1681,9 @@ final class ProjectsTools
      * are non-destructive. It applies those migrations first and then pulls exactly that
      * commit. A refusal is final for this chat: show the person Portal's message and its
      * link, and do not retry, try another route, or run git pull or db_migrate_prod yourself.
+     * The ARCH framework projects (arch-portal, arch-mcp and the others) are never promoted
+     * from chat: Portal refuses with code excluded_project and gives the link to the admin
+     * Promote page, which only a Portal admin can open. Tell the person that.
      *
      * Use it only when the person has asked to promote, and say what you are about to do
      * first: what changed, and the head. Get `expectedHead` from arch_prod_state

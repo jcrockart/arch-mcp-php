@@ -146,6 +146,11 @@ final class PromoteRequest
         if ('failed' === $result) {
             return 'Portal could not finish this promotion and production may be partly changed: see migrations and state in this reply. Do not try to fix it from chat. Show the person Portal\'s message and '.$where.'; an Owner resolves it in Portal. '.self::DO_NOT_WORK_AROUND;
         }
+        if ('refused' === $result && 'excluded_project' === ($reply['code'] ?? null)) {
+            // A framework project (v1): never promoted from chat. Portal's link is the admin
+            // Promote page, which only a Portal admin can open.
+            return 'This project cannot be promoted from chat, and nothing was changed. Show the person Portal\'s message and '.$where.'. That is the Portal page where the project is promoted today, and opening it needs a Portal admin: say so. '.self::DO_NOT_WORK_AROUND;
+        }
         if ('refused' === $result) {
             return 'Portal did not promote and nothing was changed. Show the person Portal\'s message and '.$where.'. '.self::DO_NOT_WORK_AROUND;
         }
