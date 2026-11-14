@@ -171,6 +171,12 @@ $old = $mk(false);
 $old->exec("INSERT INTO project_profiles (project_id, environment) VALUES (1, 'production')");
 check('Portal has no promote_url column yet: null, no error', null === ArchMcp\PortalPromoteUrl::fetchWith($old, 'demo', $issuers));
 check('a slug with SQL in it is just an unknown slug', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, "demo' OR '1'='1", $issuers));
+// A framework project's link is Portal's admin Promote page, read from the same column (P13).
+$fw = 'https://portal.crockart.com.au/admin_promote_details.php?label=arch-portal';
+$pdo->exec("INSERT INTO projects (id, slug) VALUES (4, 'arch-portal'), (5, 'spacey')");
+$pdo->exec("INSERT INTO project_profiles (project_id, environment, promote_url) VALUES (4, 'production', '".$fw."'), (5, 'production', 'https://portal.crockart.com.au/admin_promote_details.php?label=my label')");
+check('a framework project link (admin page with a label) is returned as stored', $fw === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'arch-portal', $issuers));
+check('a link with a raw space is not shown to a person (Portal should encode it)', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'spacey', $issuers));
 
 echo "\nlane model\n";
 $lm = sys_get_temp_dir().'/archlm'.getmypid();
