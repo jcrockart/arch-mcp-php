@@ -4,6 +4,8 @@ namespace ArchMcp;
 
 use Psr\Log\LoggerInterface;
 
+require_once __DIR__.'/CommitPin.php';
+
 /**
  * Production-state report for one checkout, added 2026-10-06.
  *
@@ -32,15 +34,26 @@ final class ProdState
     private const MAX_DIFF_BYTES = 200000;
 
     /**
+     * With `$atCommit` empty this is the report it has always been: production against the
+     * live origin/<pull_branch>. With `$atCommit` set (40 lowercase hex, see CommitPin) the
+     * incoming commits, changed files, counts and diff are measured to THAT commit instead,
+     * so a caller can judge exactly the commit it will later apply and pull. `origin_head`
+     * stays the real origin tip and `at_commit_is_origin_head` says whether the two are the
+     * same. A commit that is not on origin, a bad id or a failed fetch is a refusal with a
+     * `reason`, never a quiet "up to date".
+     *
      * @return array<string, mixed>
      */
-    public static function report(string $root, string $pullBranch, bool $includeDiff, LoggerInterface $logger): array
+    public static function report(string $root, string $pullBranch, bool $includeDiff, LoggerInterface $logger, string $atCommit = ''): array
     {
         if (1 !== preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]*$#', $pullBranch)) {
             return ['success' => false, 'error' => 'this profile has an invalid pull_branch'];
         }
         if (!is_dir($root)) {
             return ['success' => false, 'error' => 'the checkout directory does not exist'];
+        }
+        if ('' !== $atCommit && !CommitPin::isValid($atCommit)) {
+            return ['success' => false, 'reason' => 'invalid_commit', 'error' => CommitPin::NOT_VALID];
         }
         $remoteRef = 'origin/'.$pullBranch;
 
@@ -52,6 +65,21 @@ final class ProdState
 
         $fetch = self::git($root, ['fetch', 'origin']);
         $fetchOk = 0 === $fetch['exit_code'];
+
+        // The ref the incoming commits, files and diff are measured to: the live origin tip, or
+        // the one named commit. In the named case a failed fetch cannot be tolerated, because
+        // whether that commit is on origin could not be checked.
+        $compareRef = $remoteRef;
+        if ('' !== $atCommit) {
+            if (!$fetchOk) {
+                return ['success' => false, 'reason' => 'fetch_failed', 'error' => 'git fetch origin failed, so the commit cannot be checked against origin: '.trim($fetch['stderr'])];
+            }
+            $pin = CommitPin::verify($root, $pullBranch, $atCommit, false, false, false);
+            if (!$pin['ok']) {
+                return ['success' => false, 'reason' => $pin['reason'], 'error' => $pin['error']];
+            }
+            $compareRef = $atCommit;
+        }
 
         $branchNow = trim(self::git($root, ['rev-parse', '--abbrev-ref', 'HEAD'])['stdout']);
 
@@ -75,6 +103,9 @@ final class ProdState
             'dirty_files' => \array_slice($dirty, 0, self::MAX_LIST),
             'fetch_ok' => $fetchOk,
         ];
+        if ('' !== $atCommit) {
+            $result['at_commit'] = $atCommit;
+        }
         if (!$fetchOk) {
             $result['fetch_error'] = trim($fetch['stderr']);
         }
@@ -91,10 +122,13 @@ final class ProdState
         $originHead = trim($originResult['stdout']);
         $result['origin_head'] = $originHead;
         $result['origin_head_short'] = substr($originHead, 0, 7);
+        if ('' !== $atCommit) {
+            $result['at_commit_is_origin_head'] = $originHead === $atCommit;
+        }
 
         $ahead = null;
         $behind = null;
-        $counts = self::git($root, ['rev-list', '--left-right', '--count', 'HEAD...'.$remoteRef]);
+        $counts = self::git($root, ['rev-list', '--left-right', '--count', 'HEAD...'.$compareRef]);
         if (0 === $counts['exit_code']) {
             $parts = preg_split('/\s+/', trim($counts['stdout']));
             if (\is_array($parts) && 2 === \count($parts)) {
@@ -110,11 +144,11 @@ final class ProdState
         $incoming = [];
         $files = [];
         if (null !== $behind && $behind > 0) {
-            $log = self::git($root, ['log', '--oneline', '-'.self::MAX_LIST, 'HEAD..'.$remoteRef]);
+            $log = self::git($root, ['log', '--oneline', '-'.self::MAX_LIST, 'HEAD..'.$compareRef]);
             if (0 === $log['exit_code']) {
                 $incoming = self::lines($log['stdout']);
             }
-            $names = self::git($root, ['diff', '--name-status', 'HEAD...'.$remoteRef]);
+            $names = self::git($root, ['diff', '--name-status', 'HEAD...'.$compareRef]);
             if (0 === $names['exit_code']) {
                 $files = self::lines($names['stdout']);
             }
@@ -123,7 +157,7 @@ final class ProdState
         $result['changed_files'] = \array_slice($files, 0, self::MAX_LIST);
 
         if ($includeDiff && null !== $behind && $behind > 0) {
-            $diff = self::git($root, ['diff', 'HEAD...'.$remoteRef]);
+            $diff = self::git($root, ['diff', 'HEAD...'.$compareRef]);
             if (0 === $diff['exit_code']) {
                 $text = $diff['stdout'];
                 $result['diff_truncated'] = \strlen($text) > self::MAX_DIFF_BYTES;

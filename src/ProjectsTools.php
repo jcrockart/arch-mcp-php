@@ -1030,16 +1030,22 @@ final class ProjectsTools
      * `git fetch origin` and reads files from origin without touching the
      * working tree.
      *
+     * Pass atCommit (40 lowercase hex, on origin, a fast-forward of production's HEAD) to
+     * judge the migrations declared at exactly that commit instead: the reply lists those
+     * not applied to production, each with its destructive flag, plus `safe_up_to`, with
+     * `source` 'commit' and `at_commit`. Nothing is read from the working tree then.
+     *
      * @param string $slug            project slug
      * @param bool   $includeIncoming also list migrations a pull would bring in (default false)
+     * @param string $atCommit        optional: the full 40-character commit id to judge
      */
-    public function archDbPendingProd(string $slug, bool $includeIncoming = false, string $claudeProjectId = ''): array
+    public function archDbPendingProd(string $slug, bool $includeIncoming = false, string $claudeProjectId = '', string $atCommit = ''): array
     {
         $p = $this->dbProfile($slug, 'production', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
-        $result = DbTools::pending($p['profile'], 'production', $includeIncoming);
+        $result = DbTools::pending($p['profile'], 'production', $includeIncoming, $atCommit);
         $this->logger->info('db_pending_prod', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'portal_service' => $this->portalService, 'success' => $result['success'] ?? false]);
 
         return $result;
@@ -1090,14 +1096,15 @@ final class ProjectsTools
      * @param string $slug               project slug
      * @param string $upTo               optional: apply only up to and including this migration id
      * @param string $confirmDestructive only honoured when Portal itself is the caller; same formats as db_migrate_staging (comma-separated, or a JSON list)
+     * @param string $atCommit           optional: the full 40-character commit id (on origin, a fast-forward of production's HEAD, clean tree). Applies the migrations DECLARED AT THAT COMMIT, not the checkout's, before any pull. Never applies a destructive one and refuses confirmDestructive; `upTo` still means up to and including that id. The reply carries `source` 'commit', `at_commit` and, on refusal, a `reason`
      */
-    public function archDbMigrateProd(string $slug, string $upTo = '', string $confirmDestructive = '', string $claudeProjectId = ''): array
+    public function archDbMigrateProd(string $slug, string $upTo = '', string $confirmDestructive = '', string $claudeProjectId = '', string $atCommit = ''): array
     {
         $p = $this->dbProfile($slug, 'production', $claudeProjectId);
         if (!isset($p['profile'])) {
             return $p;
         }
-        $result = DbTools::migrate($p['profile'], 'production', $upTo, $confirmDestructive, DbGuard::mayConfirmDestructive('production', $this->portalService));
+        $result = DbTools::migrate($p['profile'], 'production', $upTo, $confirmDestructive, DbGuard::mayConfirmDestructive('production', $this->portalService), $atCommit);
         $this->logger->warning('db_migrate_prod', ['slug' => $slug, 'portal_user_id' => $this->portalUserId, 'portal_service' => $this->portalService, 'success' => $result['success'] ?? false, 'applied' => $result['applied'] ?? []]);
 
         return $result;
@@ -1355,12 +1362,21 @@ final class ProjectsTools
     /**
      * Fast-forward the PRODUCTION checkout to origin. Owners and admins only; this is
      * what Portal's Review & pull does. Refused if not a fast-forward.
+     *
+     * Pass atCommit (40 lowercase hex) to fast-forward to exactly that commit instead of
+     * the live origin tip. It must be on origin, a fast-forward of production's HEAD, and
+     * the tree must be clean; otherwise nothing changes and the reply carries a `reason`
+     * (invalid_commit, commit_not_on_origin, not_fast_forward, tree_dirty, fetch_failed).
+     * Never a flag or a branch name. Leave empty for today's behaviour.
+     *
+     * @param string $slug     project slug
+     * @param string $atCommit optional: the full 40-character commit id to pull to
      */
-    public function archCoreGitPullFastForward(string $slug, string $claudeProjectId = ''): array
+    public function archCoreGitPullFastForward(string $slug, string $claudeProjectId = '', string $atCommit = ''): array
     {
         $t = $this->forSlugProcess($slug, 'production', $claudeProjectId);
 
-        return \is_array($t) ? $t : $t->archCoreGitPullFastForward();
+        return \is_array($t) ? $t : $t->archCoreGitPullFastForward($atCommit);
     }
 
     /**
@@ -1392,10 +1408,16 @@ final class ProjectsTools
      * and the reason in `fetch_error` — never read null as up to date.
      * Read-only apart from the fetch, which only updates origin refs.
      *
+     * Pass atCommit (40 lowercase hex, on origin) to measure everything above to THAT
+     * commit instead of the live origin tip: `behind`, the incoming commits, changed files
+     * and the diff. The reply then carries `at_commit` and `at_commit_is_origin_head`;
+     * `origin_head` stays the real tip. A bad or unknown commit is refused with a `reason`.
+     *
      * @param string $slug        project slug
      * @param bool   $includeDiff also return the incoming diff (default false)
+     * @param string $atCommit    optional: the full 40-character commit id to measure to
      */
-    public function archProdState(string $slug, bool $includeDiff = false, string $claudeProjectId = ''): array
+    public function archProdState(string $slug, bool $includeDiff = false, string $claudeProjectId = '', string $atCommit = ''): array
     {
         $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
         if (null === $profile) {
@@ -1410,7 +1432,7 @@ final class ProjectsTools
         $subdir = $profile['lanes']['core'];
         $root = '' === $subdir ? $profile['root'] : $profile['root'].'/'.$subdir;
 
-        return ProdState::report($root, $profile['pull_branch'], $includeDiff, $this->logger);
+        return ProdState::report($root, $profile['pull_branch'], $includeDiff, $this->logger, $atCommit);
     }
 
     // -----------------------------------------------------------------
