@@ -15,8 +15,10 @@ if (!is_file($ROOT.'/src/ProvisionRequest.php')) {
     exit(2);
 }
 require $ROOT.'/src/ProvisionRequest.php';
+require $ROOT.'/src/PromoteRequest.php';
 
 use ArchMcp\PortalCaller;
+use ArchMcp\PromoteRequest;
 use ArchMcp\ProvisionRequest;
 
 final class FakeProvisionPortal implements PortalCaller
@@ -183,6 +185,132 @@ check('empty slug: refused before any call', [] === $p->calls && 'invalid' === $
 echo "\nsafety\n";
 $p = new FakeProvisionPortal($accepted);
 $all = json_encode([ProvisionRequest::request($p, 'my-app', 'note'), ProvisionRequest::status($p, 'my-app')]);
+check('no token field in anything sent or returned', !str_contains($all, 'access_token') && !str_contains(json_encode($p->calls), 'access_token'));
+
+// ---------------------------------------------------------------------------
+// arch_promote (step 3 of the chat promote-to-production job): PromoteRequest
+// against a stub of Portal's api_promote.php reply, as P6 describes it. One call,
+// never a retry; Portal's decision relayed unchanged; only a same-host https
+// promote_url reaches the chat; an unknown outcome is never read as "nothing
+// happened" for a promote.
+// ---------------------------------------------------------------------------
+$H = str_repeat('a1', 20);
+$uuid = '123e4567-e89b-42d3-a456-426614174000';
+$issuers = ['https://portal.crockart.com.au'];
+$link = 'https://portal.crockart.com.au/promote.php?slug=my-app';
+$promoted = ['success' => true, 'result' => 'promoted', 'code' => 'promoted', 'message' => 'Promoted.', 'log_id' => 7, 'deployed' => ['version' => '0.2.0', 'commit' => $H, 'promoted_at' => '2026-11-14 04:00:00'], 'migrations' => ['applied' => ['0005_a'], 'failed' => null, 'applied_before_failure' => []], 'state' => ['production_head' => $H, 'origin_head' => $H]];
+
+echo "\npromote: success\n";
+$p = new FakeProvisionPortal($promoted);
+$r = PromoteRequest::run($p, ' my-app ', $H, false, $uuid, 'cp-1', $issuers);
+check('exactly one Portal call, action promote, slug trimmed', 1 === \count($p->calls) && 'promote' === $p->calls[0][0] && 'my-app' === $p->calls[0][1]);
+check('fields: expectedHead, requestId and claudeProjectId, nothing else', ['expectedHead' => $H, 'requestId' => $uuid, 'claudeProjectId' => 'cp-1'] === $p->calls[0][2]);
+check("Portal's keys come back unchanged", 'promoted' === $r['result'] && 7 === $r['log_id'] && $promoted['deployed'] === $r['deployed'] && $promoted['migrations'] === $r['migrations'] && $promoted['state'] === $r['state'] && 'Promoted.' === $r['message']);
+check('a next line names the deployed commit and version', str_contains($r['next'], '0.2.0') && str_contains($r['next'], $H));
+check('no promote_url is invented on success', !isset($r['promote_url']));
+$p = new FakeProvisionPortal($promoted);
+PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+check('empty claudeProjectId is not sent', ['expectedHead' => $H, 'requestId' => $uuid] === $p->calls[0][2]);
+$p = new FakeProvisionPortal($promoted);
+PromoteRequest::run($p, 'my-app', $H, false, $uuid, "cp\n\x00".str_repeat('z', 300), $issuers);
+check('claudeProjectId is cleaned and cut at 100 characters', 100 >= \strlen($p->calls[0][2]['claudeProjectId']) && !preg_match('/[\x00-\x1F]/', $p->calls[0][2]['claudeProjectId']));
+
+$already = ['success' => true, 'result' => 'already_promoted', 'code' => 'already_promoted', 'message' => 'Production already runs that commit.', 'log_id' => 8, 'promote_url' => $link];
+$p = new FakeProvisionPortal($already);
+$r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+check('already_promoted: relayed, next says nothing was changed', 'already_promoted' === $r['result'] && str_contains($r['next'], 'nothing was changed'));
+
+echo "\npromote: status (check only)\n";
+$would = ['success' => true, 'result' => 'refused', 'code' => 'flag_off', 'would_promote' => false, 'message' => 'Chat promotion is switched off for this project.', 'promote_url' => $link, 'state' => ['production_head' => 'b', 'origin_head' => $H]];
+$p = new FakeProvisionPortal($would);
+$r = PromoteRequest::run($p, 'my-app', $H, true, $uuid, 'cp-1', $issuers);
+check('check only: action status, only expectedHead (and claudeProjectId) sent, no requestId', 'status' === $p->calls[0][0] && ['expectedHead' => $H, 'claudeProjectId' => 'cp-1'] === $p->calls[0][2]);
+check('check only, would_promote false: link and Portal text shown, not worked around', $link === $r['promote_url'] && str_contains($r['next'], $link) && str_contains($r['next'], 'Do not'));
+$yes = ['success' => true, 'result' => 'promoted', 'would_promote' => true, 'message' => 'This would promote.', 'migrations' => ['applied' => []]];
+$p = new FakeProvisionPortal($yes);
+$r = PromoteRequest::run($p, 'my-app', $H, true, $uuid, '', $issuers);
+check('check only, would_promote true: nothing changed, ask the person first', str_contains($r['next'], 'nothing was changed') && str_contains($r['next'], 'yes') && !str_contains($r['next'], 'Promoted'));
+
+echo "\npromote: refusals and failures come back as Portal decided\n";
+$codes = ['flag_off', 'not_owner', 'excluded_project', 'state_unknown', 'not_clean_fast_forward', 'head_mismatch', 'migrations_destructive', 'migrations_unknown', 'arch_gate_touched', 'credential_unavailable', 'schema_incomplete_blocked'];
+foreach ($codes as $code) {
+    $reply = ['success' => true, 'result' => 'refused', 'code' => $code, 'message' => "Portal says $code.", 'log_id' => 9, 'promote_url' => $link];
+    $p = new FakeProvisionPortal($reply);
+    $r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+    $same = 'refused' === $r['result'] && $code === $r['code'] && $reply['message'] === $r['message'] && 9 === $r['log_id'] && $link === $r['promote_url'];
+    check("$code: relayed, link kept, one call", $same && 1 === \count($p->calls));
+    check("$code: next shows the link, says do not retry or work around it, no git pull or db_migrate_prod", str_contains($r['next'], $link) && str_contains($r['next'], 'Do not retry') && str_contains($r['next'], 'git pull') && str_contains($r['next'], 'db_migrate_prod'));
+}
+foreach (['apply_failed', 'pull_failed'] as $code) {
+    $reply = ['success' => true, 'result' => 'failed', 'code' => $code, 'message' => "Portal says $code.", 'promote_url' => $link, 'migrations' => ['applied' => [], 'failed' => '0006_x', 'applied_before_failure' => ['0005_a']]];
+    $p = new FakeProvisionPortal($reply);
+    $r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+    check("$code: relayed, next says production may be partly changed and an Owner resolves it in Portal", 'failed' === $r['result'] && $reply['migrations'] === $r['migrations'] && str_contains($r['next'], 'partly changed') && str_contains($r['next'], 'Portal') && 1 === \count($p->calls));
+}
+foreach ([['unauthorized', 'Sign in again.'], ['not_owner', 'Only a project Owner can promote.'], ['not_found', 'No such project.']] as [$code, $msg]) {
+    $reply = ['success' => false, 'code' => $code, 'error' => $msg];
+    $p = new FakeProvisionPortal($reply);
+    check("$code: a failure with no decided result comes back exactly as Portal sent it", $reply === PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers) && 1 === \count($p->calls));
+}
+
+echo "\npromote: promote_url is checked\n";
+foreach ([
+    ['another host', 'https://evil.example/promote.php?slug=my-app'],
+    ['http', 'http://portal.crockart.com.au/promote.php?slug=my-app'],
+    ['user info', 'https://x@portal.crockart.com.au/promote.php'],
+    ['a space', 'https://portal.crockart.com.au/promote .php'],
+    ['a quote', 'https://portal.crockart.com.au/promote.php?slug="a"'],
+    ['too long', 'https://portal.crockart.com.au/'.str_repeat('a', 500)],
+    ['not a string', ['https://portal.crockart.com.au/']],
+] as [$label, $bad]) {
+    $reply = ['success' => true, 'result' => 'refused', 'code' => 'flag_off', 'message' => 'Off.', 'promote_url' => $bad];
+    $p = new FakeProvisionPortal($reply);
+    $r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+    check("$label: promote_url is dropped from the reply and not in the next line", !isset($r['promote_url']) && !str_contains($r['next'], 'evil.example') && !str_contains($r['next'], 'http://'));
+    check("$label: with a trusted Portal address the project page is offered instead", 'https://portal.crockart.com.au/project.php?slug=my-app' === ($r['project_url'] ?? null) && str_contains($r['next'], 'project.php?slug=my-app'));
+}
+$reply = ['success' => true, 'result' => 'refused', 'code' => 'flag_off', 'message' => 'Off.'];
+$p = new FakeProvisionPortal($reply);
+$r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', []);
+check('no promote_url and no trusted address: no link at all, and the next line says so', !isset($r['promote_url']) && !isset($r['project_url']) && str_contains($r['next'], 'portal.project_url'));
+
+echo "\npromote: no usable answer\n";
+$p = new FakeProvisionPortal($serverReply);
+$r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+check('promote with no answer: it MAY have promoted, do not promote again, check first', false === $r['success'] && 'server' === $r['code'] && true === $r['may_have_promoted'] && str_contains($r['error'], 'MAY have') && str_contains($r['error'], 'checkOnly') && str_contains($r['error'], 'arch_prod_state') && str_contains($r['error'], $H) && 1 === \count($p->calls));
+$p = new FakeProvisionPortal(['success' => false]);
+$r = PromoteRequest::run($p, 'my-app', $H, false, $uuid, '', $issuers);
+check('a failure with no code is treated the same way', true === ($r['may_have_promoted'] ?? false) && 1 === \count($p->calls));
+$p = new FakeProvisionPortal($serverReply);
+$r = PromoteRequest::run($p, 'my-app', $H, true, $uuid, '', $issuers);
+check('check only with no answer: changed nothing, no may_have_promoted', false === $r['success'] && 'server' === $r['code'] && !isset($r['may_have_promoted']) && str_contains($r['error'], 'changed nothing'));
+
+echo "\npromote: bad input is refused before any call\n";
+foreach ([['', 'empty'], [substr($H, 0, 7), 'a short id'], [strtoupper($H), 'upper case'], [$H."\n", 'a trailing newline'], ['--output=/tmp/x', 'a flag'], ['main', 'a branch name'], [str_repeat('a', 41), '41 characters']] as [$head, $label]) {
+    $p = new FakeProvisionPortal($promoted);
+    $r = PromoteRequest::run($p, 'my-app', $head, false, $uuid, '', $issuers);
+    check("expectedHead $label: refused, code invalid, rule stated, no call", [] === $p->calls && false === $r['success'] && 'invalid' === $r['code'] && str_contains($r['error'], '40-character') && str_contains($r['error'], 'origin_head'));
+}
+foreach ([['', 'empty slug'], ["  \n", 'blank slug'], [str_repeat('a', 201), 'long slug'], ["my\x00app", 'NUL in slug']] as [$slug, $label]) {
+    $p = new FakeProvisionPortal($promoted);
+    $r = PromoteRequest::run($p, $slug, $H, false, $uuid, '', $issuers);
+    check("$label: refused, code invalid, no call", [] === $p->calls && 'invalid' === $r['code']);
+}
+foreach (['', 'not-a-uuid', $uuid.'x', "123e4567-e89b-42d3-a456-426614174000\n"] as $badId) {
+    $p = new FakeProvisionPortal($promoted);
+    $r = PromoteRequest::run($p, 'my-app', $H, false, $badId, '', $issuers);
+    check('a promote needs a UUID request id: '.json_encode($badId).' is refused with no call', [] === $p->calls && 'invalid' === $r['code']);
+}
+$p = new FakeProvisionPortal($would);
+PromoteRequest::run($p, 'my-app', $H, true, '', '', $issuers);
+check('a check only call needs no request id', 1 === \count($p->calls));
+
+echo "\npromote: request ids and safety\n";
+$a = PromoteRequest::newRequestId();
+$b = PromoteRequest::newRequestId();
+check('newRequestId is a v4 UUID and differs each time', 1 === preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $a) && $a !== $b);
+$p = new FakeProvisionPortal($promoted);
+$all = json_encode([PromoteRequest::run($p, 'my-app', $H, false, $uuid, 'cp-1', $issuers), PromoteRequest::run($p, 'my-app', $H, true, $uuid, 'cp-1', $issuers)]);
 check('no token field in anything sent or returned', !str_contains($all, 'access_token') && !str_contains(json_encode($p->calls), 'access_token'));
 
 printf("\n%d passed, %d failed\n", $pass, $fail);

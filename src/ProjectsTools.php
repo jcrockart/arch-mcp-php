@@ -34,6 +34,8 @@ require_once __DIR__.'/ProjectBindings.php';
 require_once __DIR__.'/BindingRegistry.php';
 require_once __DIR__.'/PortalLinks.php';
 require_once __DIR__.'/ProvisionRequest.php';
+require_once __DIR__.'/PromoteRequest.php';
+require_once __DIR__.'/PortalPromoteUrl.php';
 require_once __DIR__.'/Git.php';
 require_once __DIR__.'/MemberProjects.php';
 require_once __DIR__.'/RefRead.php';
@@ -347,7 +349,9 @@ final class ProjectsTools
      * be read in between; a commit within a second of a write is refused once, and a
      * second call goes through. `bump` is patch, minor or major for versioned projects.
      * The commit lands on this project's staging checkout; production changes only
-     * when an owner runs Review & pull in Portal.
+     * when an owner runs Review & pull in Portal. A passing commit that reached origin
+     * also returns `promote_url`, the link to this project's promote view in Portal (null
+     * when Portal has none); show it to the person.
      */
     public function archSessionCommit(string $slug, string $bump = 'patch', string $claudeProjectId = ''): array
     {
@@ -359,7 +363,24 @@ final class ProjectsTools
             return $err;
         }
 
-        return $t->archSessionCommit($bump);
+        $result = $t->archSessionCommit($bump);
+        // A passing commit that reached origin: hand back the link to this project's promote
+        // view in Portal (null when Portal has none, for example a framework project), so the
+        // chat can always show it. The link only helps once the push has landed.
+        if (0 === ($result['exit_code'] ?? 1) && true === ($result['push']['pushed'] ?? false)) {
+            $result['promote_url'] = $this->promoteUrl($slug);
+        }
+
+        return $result;
+    }
+
+    /**
+     * The Portal link for promoting this project (PortalPromoteUrl), or null when Portal
+     * has none or cannot be read. Never builds a link from a guess.
+     */
+    private function promoteUrl(string $slug): ?string
+    {
+        return PortalPromoteUrl::fetch($slug, $this->environment, $this->logger, OAuthBearer::trustedIssuerUrlsForEnvironment($this->environment));
     }
 
     /**
@@ -1408,6 +1429,10 @@ final class ProjectsTools
      * and the reason in `fetch_error` — never read null as up to date.
      * Read-only apart from the fetch, which only updates origin refs.
      *
+     * A successful reply also carries `promote_url`: the link to this project's promote
+     * view in Portal, or null when Portal has none for it (for example a framework
+     * project). Show it whenever you tell the person what is waiting to be promoted.
+     *
      * Pass atCommit (40 lowercase hex, on origin) to measure everything above to THAT
      * commit instead of the live origin tip: `behind`, the incoming commits, changed files
      * and the diff. The reply then carries `at_commit` and `at_commit_is_origin_head`;
@@ -1432,7 +1457,13 @@ final class ProjectsTools
         $subdir = $profile['lanes']['core'];
         $root = '' === $subdir ? $profile['root'] : $profile['root'].'/'.$subdir;
 
-        return ProdState::report($root, $profile['pull_branch'], $includeDiff, $this->logger, $atCommit);
+        $report = ProdState::report($root, $profile['pull_branch'], $includeDiff, $this->logger, $atCommit);
+        if (true === ($report['success'] ?? false)) {
+            // Where to promote this project in Portal; null when Portal has no link for it.
+            $report['promote_url'] = $this->promoteUrl($slug);
+        }
+
+        return $report;
     }
 
     // -----------------------------------------------------------------
@@ -1637,6 +1668,71 @@ final class ProjectsTools
             'portal_user_id' => $this->portalUserId,
             'success' => $result['success'] ?? false,
             'code' => $result['code'] ?? null,
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * Ask Portal to PROMOTE this project to production: the same promotion as the Publish
+     * Changes button, with Portal's own checks and audit log. Portal decides everything: it
+     * checks you are an Owner of the project, that chat promotion is switched on for it, that
+     * production can fast-forward to `expectedHead`, and that the incoming database changes
+     * are non-destructive. It applies those migrations first and then pulls exactly that
+     * commit. A refusal is final for this chat: show the person Portal's message and its
+     * link, and do not retry, try another route, or run git pull or db_migrate_prod yourself.
+     *
+     * Use it only when the person has asked to promote, and say what you are about to do
+     * first: what changed, and the head. Get `expectedHead` from arch_prod_state
+     * (`origin_head`, the full 40-character id), after the person has seen what is incoming.
+     * One explicit yes covers one head. Pass checkOnly true first to see what Portal would
+     * do without changing anything. If the reply says the outcome is unknown
+     * (`may_have_promoted`), do not promote again: call with checkOnly true and arch_prod_state
+     * to see where production is.
+     *
+     * Needs the person's own sign-in to this connector (it is refused on the break-glass
+     * address and for Portal's own service credential). Never ask them for a password,
+     * token or key.
+     *
+     * @param string $slug            project slug
+     * @param string $expectedHead    the full 40-character lowercase commit id of origin's head that the person was shown (arch_prod_state `origin_head`)
+     * @param bool   $checkOnly       true: only ask Portal what it would do (changes nothing); default false promotes
+     * @param string $claudeProjectId this Claude project's ID (kept in Portal's log for information only)
+     */
+    public function archPromote(string $slug, string $expectedHead, bool $checkOnly = false, string $claudeProjectId = ''): array
+    {
+        $client = $this->bootstrapClient('arch_promote', 'api_promote.php');
+        if (\is_array($client)) {
+            return $client;
+        }
+        // Membership first, then the binding check, as every other tool does.
+        $profile = PortalProjectResolver::resolve($this->portalUserId, $slug, $this->logger, $this->environment, 'production');
+        if (null === $profile) {
+            return ['success' => false, 'error' => "no such project '{$slug}', or not accessible to this account"];
+        }
+        if (null !== ($binding = $this->bindingError($slug, $claudeProjectId))) {
+            return ['success' => false, 'error' => $binding];
+        }
+
+        $result = PromoteRequest::run(
+            $client,
+            $slug,
+            $expectedHead,
+            $checkOnly,
+            $checkOnly ? '' : PromoteRequest::newRequestId(),
+            $claudeProjectId,
+            OAuthBearer::trustedIssuerUrlsForEnvironment($this->environment)
+        );
+        // Never the token.
+        $this->logger->warning('arch_promote', [
+            'slug' => mb_substr($slug, 0, 120),
+            'portal_user_id' => $this->portalUserId,
+            'check_only' => $checkOnly,
+            'expected_head' => mb_substr($expectedHead, 0, 40),
+            'success' => $result['success'] ?? false,
+            'result' => $result['result'] ?? null,
+            'code' => $result['code'] ?? null,
+            'log_id' => $result['log_id'] ?? null,
         ]);
 
         return $result;

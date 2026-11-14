@@ -139,6 +139,7 @@ function archMcpBuildProjectsServer(LoggerInterface $logger, ProjectsTools $tool
         ->addTool([ProjectsTools::class, 'archCoreGitPullFastForward'], 'arch_core_git_pull')
         ->addTool([ProjectsTools::class, 'archCoreGitPushOrigin'], 'arch_core_git_push')
         ->addTool([ProjectsTools::class, 'archProdState'], 'arch_prod_state')
+        ->addTool([ProjectsTools::class, 'archPromote'], 'arch_promote')
         ->addTool([ProjectsTools::class, 'archDependencyInstall'], 'arch_dependency_install')
         ->addTool([ProjectsTools::class, 'archBootstrapFillInceptionRow'], 'arch_bootstrap_fill_inception_row')
         ->addTool([ProjectsTools::class, 'installBootstrap'], 'install_bootstrap')

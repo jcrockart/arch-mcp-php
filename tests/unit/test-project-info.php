@@ -147,6 +147,31 @@ check('notes split into titled sections', 3 === count($n) && 'Hosting' === $n[0]
 check('no notes gives null', null === ProjectInfo::sections(null) && null === ProjectInfo::sections("  \n"));
 check('db rules say db_apply_allowed does not gate the db tools', str_contains(ProjectInfo::DB_RULES, 'db_apply_allowed') && str_contains(ProjectInfo::DB_RULES, 'read-only checks'));
 
+echo "\npromote_url (PortalPromoteUrl: SELECT only, fail soft, same-host https only)\n";
+require_once $ROOT.'/src/PortalPromoteUrl.php';
+$issuers = ['https://portal.crockart.com.au'];
+$mk = static function (bool $withColumn): PDO {
+    $pdo = new PDO('sqlite::memory:');
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->exec('CREATE TABLE projects (id INTEGER PRIMARY KEY, slug TEXT)');
+    $pdo->exec('CREATE TABLE project_profiles (id INTEGER PRIMARY KEY, project_id INTEGER, environment TEXT'.($withColumn ? ', promote_url TEXT' : '').')');
+    $pdo->exec("INSERT INTO projects (id, slug) VALUES (1, 'demo'), (2, 'bare'), (3, 'evil')");
+
+    return $pdo;
+};
+$pdo = $mk(true);
+$pdo->exec("INSERT INTO project_profiles (project_id, environment, promote_url) VALUES (1, 'production', 'https://portal.crockart.com.au/promote.php?slug=demo'), (1, 'staging', 'https://portal.crockart.com.au/promote.php?slug=STAGING'), (2, 'production', NULL), (3, 'production', 'https://evil.example/promote.php?slug=evil')");
+check('production row with a Portal link: returned', 'https://portal.crockart.com.au/promote.php?slug=demo' === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'demo', $issuers));
+check('the staging row is never read', 'https://portal.crockart.com.au/promote.php?slug=demo' === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'demo', $issuers) && !str_contains((string) ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'demo', $issuers), 'STAGING'));
+check('NULL (excluded project or not set): null', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'bare', $issuers));
+check('a link on another host is dropped', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'evil', $issuers));
+check('an unknown slug: null', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'nope', $issuers));
+check('no trusted Portal address: null, never a guess', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, 'demo', []));
+$old = $mk(false);
+$old->exec("INSERT INTO project_profiles (project_id, environment) VALUES (1, 'production')");
+check('Portal has no promote_url column yet: null, no error', null === ArchMcp\PortalPromoteUrl::fetchWith($old, 'demo', $issuers));
+check('a slug with SQL in it is just an unknown slug', null === ArchMcp\PortalPromoteUrl::fetchWith($pdo, "demo' OR '1'='1", $issuers));
+
 echo "\nlane model\n";
 $lm = sys_get_temp_dir().'/archlm'.getmypid();
 mkdir($lm, 0775, true);
